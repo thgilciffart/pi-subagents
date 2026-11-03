@@ -154,6 +154,8 @@ Children retain their IDs, conversations, tasks, models, settings, allowlists, o
 
 Saved-parent runtime data lives at `<Pi agent directory>/subagents/sessions/<parent hash>/`, outside the repository. SQLite stores task checkpoints and conversations. A separate SQLite lock prevents two processes from owning the same parent. Ephemeral parents keep child runtime data in memory and lose it on extension reload or process exit.
 
+Starting Pi from your home directory uses `~/.pi/agent` normally. The storage check rejects runtime data inside a Git checkout, including when Pi starts in a subdirectory of that checkout.
+
 Safe file reads can replay after interruption. Writes, edits, commands, and all MCP calls return interruption results when their outcome is uncertain. Effects may already exist, so inspect them before another operation. Recovery checks saved ownership, permission ceilings, allowlists, project trust, worktree identity, and current capability availability before dispatch.
 
 Result receipts remain pending until the native parent transcript records them. A restart reuses saved receipts to prevent duplicate automatic delivery. Explicit `result` calls can still read an earlier result. Request deduplication and receipts do not guarantee exactly-once external effects, model billing, or parent reasoning.

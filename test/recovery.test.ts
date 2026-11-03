@@ -118,6 +118,7 @@ test('only one process can own the saved parent, and runtime storage cannot be i
   const f = await fixture(true);
   try {
     await expect(openStore(f.agentDir, join(f.dir, 'parent.jsonl'), 'parent', f.cwd)).rejects.toThrow('Another Pi process');
+    await mkdir(join(f.cwd, '.git'));
     await expect(openStore(join(f.cwd, '.pi'), join(f.dir, 'parent.jsonl'), 'parent', f.cwd)).rejects.toThrow('outside');
   } finally { await f.cleanup(); }
 });

@@ -24,18 +24,20 @@ export async function canonicalPath(path: string): Promise<string> {
 export async function openStore(agentDir: string, parentFile: string | undefined, parentId: string, cwd: string): Promise<Store> {
   if (!parentFile) return { storage: new MemoryStorage(), release: () => {} };
   const root = join(agentDir, 'subagents', 'sessions');
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  const [actualRoot, actualCwd] = await Promise.all([realpath(root), realpath(cwd)]);
-  let boundary = actualCwd;
+  const [actualRoot, actualCwd] = await Promise.all([canonicalPath(root), realpath(cwd)]);
+  let boundary: string | undefined;
   for (let directory = actualCwd; ; directory = dirname(directory)) {
     try { await stat(join(directory, '.git')); boundary = directory; break; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     if (directory === dirname(directory)) break;
   }
-  const within = relative(boundary, actualRoot);
-  if (within === '' || (within !== '..' && !within.startsWith('../') && !isAbsolute(within))) {
-    throw new Error('Pi agent directory must be outside the working directory. Runtime chats cannot be stored in the repository.');
+  if (boundary) {
+    const within = relative(boundary, actualRoot);
+    if (within === '' || (within !== '..' && !within.startsWith('../') && !isAbsolute(within))) {
+      throw new Error('Pi agent directory must be outside the Git repository. Runtime chats cannot be stored in the repository.');
+    }
   }
+  await mkdir(actualRoot, { recursive: true, mode: 0o700 });
   const parentPath = await canonicalPath(parentFile);
   const key = createHash('sha256').update(`${parentId}\0${parentPath}`).digest('hex');
   const dir = join(actualRoot, key);
