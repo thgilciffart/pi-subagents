@@ -10,7 +10,7 @@ This is a standalone package, separate from pi-qol. It targets Pi 1.4.x and Node
 pi install git:github.com/thgilciffart/pi-subagents
 ```
 
-Reload Pi, then ask the parent to delegate a task. `/agents` or Ctrl+Alt+A opens the child picker. `/agents <id>` opens a transcript.
+Reload Pi, then ask the parent to delegate a task. `/agents` opens the child picker. Alt+Left also opens it when the text box is empty. `/agents <id>` opens a transcript.
 
 ## Built-in agents
 
@@ -204,13 +204,13 @@ Result receipts remain pending until the native parent transcript records them. 
 
 Tasks contain one to 50,000 characters. `wait` defaults to 30 seconds and accepts one to 60,000 milliseconds. Aborting a wait does not cancel the child. Token and cost totals cover the child conversation.
 
-`/agents` or Ctrl+Alt+A opens the picker. `/agents <id>` opens the transcript. `/agents list` inspects definitions, `/agents config` edits settings, `/agents resume [id]` recovers work, and `/agents stop [id]` cancels one or all active children. Numbers prefixed with `#` are persistent child IDs, not list positions. IDs can have gaps because Pi Durable shares its record counter with other records. Nested entries show their parent ID. Outside the terminal UI, inspection uses text notifications.
+`/agents` opens the picker. Alt+Left also opens it when the text box is empty. `/agents <id>` opens the transcript. `/agents list` inspects definitions, `/agents config` edits settings, `/agents resume [id]` recovers work, and `/agents stop [id]` cancels one or all active children. Numbers prefixed with `#` are persistent child IDs, not list positions. IDs can have gaps because Pi Durable shares its record counter with other records. Nested entries show their parent ID. Outside the terminal UI, inspection uses text notifications.
 
 ## Status indicator
 
-While children run, `Subagents N · Ctrl+Alt+A` appears on the right of the first footer line. The count includes nested children. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
+While children run, `Subagents N · Alt+←` appears on the right of the first footer line. The count includes nested children. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
 
-This placement uses Pi's custom-footer slot. If another extension supplies your footer, set `indicatorPosition` to `"status"` to use the ordinary extension-status row instead. Change settings with `/agents config`. Ctrl+Alt+A opens the picker in either mode. Alt+Left retains Pi's word-navigation binding.
+This placement uses Pi's custom-footer slot. If another extension supplies your footer, set `indicatorPosition` to `"status"` to use the ordinary extension-status row instead. Change settings with `/agents config`. In either mode, Alt+Left opens the picker when the text box is empty. With any text in the box, Alt+Left keeps the editor's word-navigation behavior.
 
 ## Settings
 

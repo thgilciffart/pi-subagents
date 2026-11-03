@@ -21,10 +21,16 @@ async function harness(persistent = false) {
   let manager = persistent ? SessionManager.create(cwd, join(dir, 'sessions')) : SessionManager.inMemory(cwd);
   const handlers = new Map<string, any>(), tools = new Map<string, any>(), commands = new Map<string, any>(), renderers = new Map<string, any>(), shortcuts = new Map<string, any>();
   const messages: any[] = [], notifications: any[] = [], statuses: any[] = [], footers: any[] = [];
+  const forwarded: string[] = [];
+  let editorText = '';
+  const baseFactory = () => ({ getText: () => editorText, handleInput: (data: string) => forwarded.push(data) });
+  let editorFactory: any = baseFactory, editor = baseFactory();
   let runtime!: SubagentRuntime, persistMessages = true, sequence = 0;
   const context: any = { cwd, mode: 'tui', hasUI: true, model: faux.models[0], modelRegistry: new ModelRegistry(models),
     scopedModels: [], thinkingLevel: 'off', isProjectTrusted: () => true, sessionManager: manager, isIdle: () => true,
     ui: { setStatus: (key: string, value: unknown) => statuses.push({ key, value }), notify: (text: string) => notifications.push(text),
+      getEditorComponent: () => editorFactory,
+      setEditorComponent: (factory: any) => { editorFactory = factory ?? baseFactory; editor = editorFactory({}, {}, {}); },
       setFooter: (factory: any) => footers.push(factory), select: async () => undefined, editor: async () => undefined } };
   const pi: any = {
     events: createEventBus(), getCommands: () => [], getAllTools: () => [], getMcpServers: () => [], getActiveTools: () => [],
@@ -48,7 +54,8 @@ async function harness(persistent = false) {
       isError: result.isError ?? false, timestamp: Date.now(), details: result.details });
     return result;
   };
-  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, shortcuts, emit, tool, get runtime() { return runtime; }, pi,
+  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, shortcuts, emit, tool, forwarded,
+    get editor() { return editor; }, text: (value: string) => { editorText = value; }, get runtime() { return runtime; }, pi,
     persist: (value: boolean) => { persistMessages = value; },
     reload: async () => {
       await emit('session_shutdown');
@@ -271,14 +278,27 @@ test('the shared status and transcript inspector stay within the terminal width'
   finally { inspector.dispose(); }
 });
 
-test('Ctrl+Alt+A opens the subagent picker', async () => {
+test('Alt+Left opens the picker only from an empty editor and survives reload', async () => {
   const h = await harness();
   try {
     let title = '';
     h.context.ui.select = async (value: string) => { title = value; return undefined; };
-    await h.shortcuts.get('ctrl+alt+a').handler(h.context);
+    h.text('some words');
+    h.editor.handleInput('\x1b[1;3D');
+    await flush();
+    expect(title).toBe('');
+    expect(h.forwarded).toEqual(['\x1b[1;3D']);
+    h.text('');
+    h.editor.handleInput('\x1b[1;3D');
+    await flush();
     expect(title).toContain('Subagents');
     expect(title).toContain('persistent child ID');
+    expect(h.shortcuts.size).toBe(0);
+    title = '';
+    await h.reload();
+    h.editor.handleInput('\x1b[1;3D');
+    await flush();
+    expect(title).toContain('Subagents');
   } finally { await h.cleanup(); }
 });
 

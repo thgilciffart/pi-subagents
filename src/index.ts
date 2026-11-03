@@ -11,7 +11,7 @@ import { readSubagentSettings, writeSubagentSettings } from './config.ts';
 import { parentRuntime, SubagentRuntime, isRunning, type RunSnapshot, type SavedChild } from './runtime.ts';
 import { openStore } from './storage.ts';
 import { parentReceipts, RESULT_MESSAGE } from './receipts.ts';
-import { compactText, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter, SUBAGENT_SHORTCUT } from './ui.ts';
+import { compactText, emptyEditorShortcut, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
 
 const Params = Type.Object({
   action: Type.Union(['list', 'spawn', 'send', 'steer', 'resume', 'status', 'wait', 'result', 'transcript', 'cancel', 'close'].map(value => Type.Literal(value))),
@@ -63,6 +63,7 @@ export default function subagents(pi: ExtensionAPI, options: {
   const queued = new Set<string>();
   const reading = new Set<string>();
   let generation = 0;
+  const pickerShortcut = emptyEditorShortcut(context => command('', context), report);
 
   function report(error: unknown): void { ctx?.ui.notify(error instanceof Error ? error.message : String(error), 'error'); }
   function changed(): void {
@@ -92,10 +93,12 @@ export default function subagents(pi: ExtensionAPI, options: {
     noticeTimer = undefined; queued.clear(); reading.clear();
     const old = runtime; runtime = undefined;
     ctx?.ui.setStatus('pi-subagents', undefined);
+    if (ctx) pickerShortcut.dispose(ctx);
     if (ownsFooter) { ctx?.ui.setFooter(undefined); ownsFooter = false; }
     await old?.dispose();
     ctx = context; sessionId = context?.sessionManager.getSessionId();
     if (!context) return;
+    pickerShortcut.install(context);
     configureFooter(context, (await readSubagentSettings(configPath)).indicatorPosition);
     const models = parentRuntime(context);
     const store = await (options.openStore ?? openStore)(agentDir, context.sessionManager.getSessionFile(), sessionId!, context.cwd);
@@ -271,5 +274,4 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
     } catch (error) { report(error); }
   }
   pi.registerCommand('agents', { description: 'Inspect subagents, transcripts, recovery, and settings', handler: command });
-  pi.registerShortcut(SUBAGENT_SHORTCUT, { description: 'Open the subagent picker', handler: context => command('', context) });
 }

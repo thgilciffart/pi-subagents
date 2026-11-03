@@ -1,5 +1,5 @@
 import { Key, matchesKey, stripTerminalSequences, Text, truncateToWidth, visibleWidth, type Component } from '@earendil-works/pi-tui';
-import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from '@earendil-works/pi-coding-agent';
+import { CustomEditor, type ExtensionContext, type ReadonlyFooterDataProvider, type Theme } from '@earendil-works/pi-coding-agent';
 import { homedir } from 'node:os';
 import { relative, isAbsolute, sep } from 'node:path';
 import { isRunning, type RunSnapshot } from './runtime.ts';
@@ -11,10 +11,47 @@ export function oneLine(value: string): string {
 export function formatSubagentStatus(runs: RunSnapshot[]): string | undefined {
   const active = runs.filter(isRunning);
   if (!active.length) return undefined;
-  return `Subagents ${active.length} · Ctrl+Alt+A`;
+  return `Subagents ${active.length} · Alt+←`;
 }
 
-export const SUBAGENT_SHORTCUT = 'ctrl+alt+a';
+export const SUBAGENT_SHORTCUT = 'alt+left';
+
+type EditorFactory = NonNullable<Parameters<ExtensionContext['ui']['setEditorComponent']>[0]>;
+
+/** Intercept only input delivered to the composer, leaving dialogs and typed text alone. */
+export function emptyEditorShortcut(open: (context: ExtensionContext) => Promise<void>, report: (error: unknown) => void) {
+  let installed: { factory: EditorFactory; previous?: EditorFactory; enabled: boolean } | undefined;
+  let opening = false;
+  function dispose(context: ExtensionContext): void {
+    if (!installed) return;
+    installed.enabled = false;
+    if (context.ui.getEditorComponent() === installed.factory) context.ui.setEditorComponent(installed.previous);
+    installed = undefined;
+  }
+  function install(context: ExtensionContext): void {
+    if (!context.hasUI || context.mode !== 'tui') return;
+    dispose(context);
+    const previous = context.ui.getEditorComponent();
+    const current: NonNullable<typeof installed> = { previous, enabled: true, factory: (tui, theme, keybindings) => {
+      const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true });
+      const handleInput = editor.handleInput.bind(editor);
+      editor.handleInput = data => {
+        if (current.enabled && matchesKey(data, SUBAGENT_SHORTCUT) && editor.getText() === '') {
+          if (!opening) {
+            opening = true;
+            void Promise.resolve().then(() => current.enabled ? open(context) : undefined).catch(report).finally(() => { opening = false; });
+          }
+          return;
+        }
+        handleInput(data);
+      };
+      return editor;
+    } };
+    installed = current;
+    context.ui.setEditorComponent(current.factory);
+  }
+  return { install, dispose };
+}
 
 /** Keep the right-hand label visible, shortening the left side first. */
 export function footerRow(left: string, right: string, width: number): string {
