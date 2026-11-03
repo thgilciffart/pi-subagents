@@ -11,15 +11,15 @@ export function oneLine(value: string): string {
 export function formatSubagentStatus(runs: RunSnapshot[]): string | undefined {
   const active = runs.filter(isRunning);
   if (!active.length) return undefined;
-  return `Subagents ${active.length} · Alt+←`;
+  return `Subagents ${active.length} · Shift+←`;
 }
 
-export const SUBAGENT_SHORTCUT = 'alt+left';
+export const SUBAGENT_SHORTCUT = 'shift+left';
 
 type EditorFactory = NonNullable<Parameters<ExtensionContext['ui']['setEditorComponent']>[0]>;
 
 /** Intercept only input delivered to the composer, leaving dialogs and typed text alone. */
-export function emptyEditorShortcut(open: (context: ExtensionContext) => Promise<void>, report: (error: unknown) => void) {
+export function editorPickerShortcut(open: (context: ExtensionContext) => Promise<void>, report: (error: unknown) => void) {
   let installed: { factory: EditorFactory; previous?: EditorFactory; enabled: boolean } | undefined;
   let opening = false;
   function dispose(context: ExtensionContext): void {
@@ -36,7 +36,7 @@ export function emptyEditorShortcut(open: (context: ExtensionContext) => Promise
       const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true });
       const handleInput = editor.handleInput.bind(editor);
       editor.handleInput = data => {
-        if (current.enabled && matchesKey(data, SUBAGENT_SHORTCUT) && editor.getText() === '') {
+        if (current.enabled && matchesKey(data, SUBAGENT_SHORTCUT)) {
           if (!opening) {
             opening = true;
             void Promise.resolve().then(() => current.enabled ? open(context) : undefined).catch(report).finally(() => { opening = false; });

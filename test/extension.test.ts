@@ -278,7 +278,7 @@ test('the shared status and transcript inspector stay within the terminal width'
   finally { inspector.dispose(); }
 });
 
-test('Alt+Left opens the picker only from an empty editor and survives reload', async () => {
+test('Shift+Left opens the picker with text or an empty editor and survives reload', async () => {
   const h = await harness();
   try {
     let title = '';
@@ -288,15 +288,16 @@ test('Alt+Left opens the picker only from an empty editor and survives reload', 
     await flush();
     expect(title).toBe('');
     expect(h.forwarded).toEqual(['\x1b[1;3D']);
-    h.text('');
-    h.editor.handleInput('\x1b[1;3D');
+    h.editor.handleInput('\x1b[1;2D');
     await flush();
     expect(title).toContain('Subagents');
     expect(title).toContain('persistent child ID');
+    expect(h.editor.getText()).toBe('some words');
     expect(h.shortcuts.size).toBe(0);
     title = '';
     await h.reload();
-    h.editor.handleInput('\x1b[1;3D');
+    h.text('');
+    h.editor.handleInput('\x1b[1;2D');
     await flush();
     expect(title).toContain('Subagents');
   } finally { await h.cleanup(); }

@@ -11,7 +11,7 @@ import { readSubagentSettings, writeSubagentSettings } from './config.ts';
 import { parentRuntime, SubagentRuntime, isRunning, type RunSnapshot, type SavedChild } from './runtime.ts';
 import { openStore } from './storage.ts';
 import { parentReceipts, RESULT_MESSAGE } from './receipts.ts';
-import { compactText, emptyEditorShortcut, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
+import { compactText, editorPickerShortcut, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
 
 const Params = Type.Object({
   action: Type.Union(['list', 'spawn', 'send', 'steer', 'resume', 'status', 'wait', 'result', 'transcript', 'cancel', 'close'].map(value => Type.Literal(value))),
@@ -63,7 +63,7 @@ export default function subagents(pi: ExtensionAPI, options: {
   const queued = new Set<string>();
   const reading = new Set<string>();
   let generation = 0;
-  const pickerShortcut = emptyEditorShortcut(context => command('', context), report);
+  const pickerShortcut = editorPickerShortcut(context => command('', context), report);
 
   function report(error: unknown): void { ctx?.ui.notify(error instanceof Error ? error.message : String(error), 'error'); }
   function changed(): void {
