@@ -22,6 +22,9 @@ const parent = (await createAgentSession({ cwd, agentDir, modelRuntime: models, 
 const errors: string[] = [];
 try {
   await parent.bindExtensions({ onError: error => errors.push(error.error) });
+  const delegate = parent.agent.state.tools.find(tool => tool.name === 'subagent')!;
+  const catalog = await delegate.execute('packaged-list', { action: 'list' });
+  if ((catalog as any).isError || !JSON.stringify(catalog).includes('Parent capabilities')) throw new Error(`Packaged list failed: ${JSON.stringify(catalog)}`);
   let requests = 0;
   parent.agent.streamFunction = (_model, context) => {
     requests++;

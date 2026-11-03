@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, lstat, mkdir, readFile, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
+import { getPackageDir } from '@earendil-works/pi-coding-agent';
 import { canonicalPath } from './storage.ts';
 
 const exec = promisify(execFile);
@@ -84,7 +86,7 @@ type ToolPathResolver = { resolveToCwd: (path: string, cwd: string) => string; r
 let toolPaths: Promise<ToolPathResolver> | undefined;
 /** Use the same Pi 1.4 resolver as the tool, including home paths and file URLs. */
 export async function checkWorktreePath(worktree: Worktree, cwd: string, path: string | undefined, read = false): Promise<string> {
-  toolPaths ??= import(new URL('core/tools/path-utils.js', import.meta.resolve('@earendil-works/pi-coding-agent')).href).then(module => {
+  toolPaths ??= import(pathToFileURL(join(getPackageDir(), 'dist/core/tools/path-utils.js')).href).then(module => {
     if (typeof module.resolveToCwd !== 'function' || typeof module.resolveReadPath !== 'function') throw new Error('Pi 1.4 tool path resolver is unavailable.');
     return module as ToolPathResolver;
   });

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
-import type { ExtensionAPI, ExtensionContext, McpServerEntry, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { pathToFileURL } from 'node:url';
+import { getPackageDir, type ExtensionAPI, type ExtensionContext, type McpServerEntry, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Tool, CallToolResult } from '@earendil-works/pi-mcp';
 import type { ToolExecutionResult } from '@earendil-works/pi-durable';
 import { Check } from 'typebox/value';
@@ -29,9 +30,10 @@ interface PiMcp {
 let modules: Promise<PiMcp> | undefined;
 async function internals(): Promise<PiMcp> {
   return modules ??= (async () => {
-    const root = import.meta.resolve('@earendil-works/pi-coding-agent');
+    // Pi supplies public imports through its loader, without local host peers.
+    // Use that host's directory rather than resolving from the extension.
     const paths = ['extensions/mcp/config.js', 'extensions/mcp/runtime.js', 'extensions/mcp/tools.js', 'core/auth-storage.js'];
-    const parts = await Promise.all(paths.map(path => import(new URL(path, root).href)));
+    const parts = await Promise.all(paths.map(path => import(pathToFileURL(join(getPackageDir(), 'dist', path)).href)));
     const api = Object.assign({}, ...parts) as PiMcp;
     for (const name of ['loadMcpConfig', 'McpServerConnection', 'McpOAuthCredentialStore', 'FileAuthStorageBackend', 'createMcpToolDefinition', 'convertMcpResult'] as const) {
       if (typeof api[name] !== 'function') throw new Error(`Pi 1.4 MCP compatibility helper unavailable: ${name}.`);
