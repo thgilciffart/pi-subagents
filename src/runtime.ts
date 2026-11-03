@@ -9,7 +9,7 @@ import {
 } from '@earendil-works/pi-durable';
 import type { Models as PiModels, Model, Api, Context, ModelsSimpleStreamOptions, Message } from '@earendil-works/pi-ai';
 import type { ExtensionContext, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { PERMISSION_TOOLS, type AgentDefinition, type Thinking, type Isolation, type ContextMode } from './agents.ts';
+import { BUILTIN_AGENTS, PERMISSION_TOOLS, type AgentDefinition, type Thinking, type Isolation, type ContextMode } from './agents.ts';
 import { validateSubagentSettings, type SubagentSettings } from './config.ts';
 import { guardedModels } from './models.ts';
 import { childTools } from './tools.ts';
@@ -19,6 +19,7 @@ import { capabilityTools, checkCapabilityPermissions, emptyCapabilities, type Ca
 import { forkMessages } from './fork.ts';
 import { ensureWorktree, planWorktree, verifyWorktree, type Worktree } from './worktrees.ts';
 import type { Store } from './storage.ts';
+import { nestedOperation, type NestedParams } from './nested.ts';
 
 export type RunStatus = 'starting' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type RunSnapshot = {
@@ -26,6 +27,7 @@ export type RunSnapshot = {
   tools: string[]; startedAt: number; finishedAt?: number; turns: number; toolCalls: number; activity?: string;
   output: string; error?: string; sessionFile?: string; tokens: number; cost: number;
   trust?: Trust;
+  parentChildId?: string; depth?: number;
   lifecycleErrors?: string[];
   context?: ContextMode;
   capabilities?: { skills: string[]; mcpTools: string[]; hooks: string[] };
@@ -39,6 +41,7 @@ export type SavedChild = {
   settings: SubagentSettings; model: string; thinking: Thinking; cwd: string; parentCwd?: string; worktree?: Worktree; instructions: string;
   capabilities?: Capabilities; context?: ContextMode; forkParentLeaf?: string; projectTrusted: boolean; closed: boolean; runs: RunSnapshot[];
   trust?: Trust; policy?: ToolPolicy;
+  delegation?: { ownerId: string; ownerRun: number; depth: number }; sharedInstructions?: string;
   lifecycle?: Record<string, LifecycleRecord>;
   routing?: { state?: JsonValue; decisions: Record<string, { provider: string; id: string; thinking: Thinking }> };
 };
@@ -53,6 +56,7 @@ const Anchor = defineTask<null, { phase: 'done' }, null>({ name: 'pi-subagents.o
 export type SpawnOptions = {
   definition: AgentDefinition; trust?: Trust; task: string; tools: string[]; settings: SubagentSettings;
   model: string; thinking: Thinking; instructions: string; capabilities?: Capabilities; projectTrusted: boolean; isolation?: Isolation; context?: ContextMode; history?: Message[]; forkParentLeaf?: string;
+  delegation?: SavedChild['delegation']; sharedInstructions?: string;
 };
 
 export function parentRuntime(ctx: Pick<ExtensionContext, 'modelRegistry'>): ModelRuntime {
@@ -69,7 +73,7 @@ const latest = (child: SavedChild) => child.runs[child.runs.length - 1];
 
 export class SubagentRuntime {
   private constructor(readonly harness: Harness, private root: Conversation, private store: Store,
-    private extension: ReturnType<typeof defineExtension>, private options: { capabilities?: ParentCapabilities; worktreeRoot?: string; parentId: string; cwd: string; models: PiModels; allow: (child: SavedChild) => void; changed: () => void; error: (error: unknown) => void }) {}
+    private extension: ReturnType<typeof defineExtension>, private options: { capabilities?: ParentCapabilities; definitions?: () => Promise<AgentDefinition[]>; worktreeRoot?: string; parentId: string; cwd: string; models: PiModels; allow: (child: SavedChild) => void; changed: () => void; error: (error: unknown) => void }) {}
   private ended = false;
   private epoch = randomUUID();
   private operations = new Map<string, Promise<void>>();
@@ -85,7 +89,8 @@ export class SubagentRuntime {
   static async open(store: Store, options: SubagentRuntime['options']): Promise<SubagentRuntime> {
     const registry = createRegistry();
     let runtime: SubagentRuntime | undefined;
-    const guards = defineExtension({ name: 'pi-subagents', tools: childTools(options.cwd, (id, name) => runtime!.authorizeTool(id, name), options.capabilities), tasks: [Anchor], hooks: [
+    const guards = defineExtension({ name: 'pi-subagents', tools: childTools(options.cwd, (id, name) => runtime!.authorizeTool(id, name), options.capabilities,
+      (child, args, callId, signal) => runtime!.delegate(String(child.id), args, callId, signal)), tasks: [Anchor], hooks: [
       hook(ToolTask, { beforeTool: async (call, api) => {
         try {
           const child = await runtime!.saved(api.conversationId);
@@ -215,6 +220,7 @@ export class SubagentRuntime {
 
   private async ensureLifecycle(child: SavedChild): Promise<void> {
     this.check(await this.saved(child.id));
+    if (child.delegation) this.checkDelegation(child, await this.state());
     await this.lifecycle(child, 'start');
     if (this.recovering.get(String(child.id)) === latest(child).run) {
       await this.recoverAdmissions();
@@ -301,6 +307,56 @@ export class SubagentRuntime {
     const split = child.model.indexOf('/');
     if (!this.options.models.getModel(child.model.slice(0, split), child.model.slice(split + 1))) throw new Error(`Saved model unavailable: ${child.model}`);
   }
+  private checkDelegation(child: SavedChild, state: Readonly<State>): void {
+    const seen = new Set<string>([String(child.id)]);
+    for (let current = child; current.delegation;) {
+      const relation = current.delegation;
+      const owner = state.children[relation.ownerId];
+      if (!owner || seen.has(relation.ownerId)) throw new Error('Invalid nested child ownership.');
+      seen.add(relation.ownerId);
+      this.check(clone(owner));
+      if (latest(owner).run !== relation.ownerRun || relation.depth !== (owner.delegation?.depth ?? 1) + 1 || relation.depth > validateSubagentSettings(owner.settings).maxDepth) throw new Error('The delegating task is no longer active or its depth limit changed.');
+      if (current.cwd !== owner.cwd || JSON.stringify(current.worktree) !== JSON.stringify(owner.worktree)) throw new Error('Nested children must keep their owner working directory.');
+      if (!owner.tools.includes('subagent') || current.tools.some(tool => !owner.tools.includes(tool))) throw new Error('Nested tools exceed the delegating agent allowlist.');
+      const rank = { 'read-only': 0, edit: 1, full: 2 };
+      if (rank[current.definition.permissions] > rank[owner.definition.permissions] || (owner.trust === 'untrusted' && current.trust !== 'untrusted')) throw new Error('Nested child trust or permissions exceed the owner policy.');
+      for (const field of ['skills', 'mcpTools', 'hooks'] as const) {
+        if (current.capabilities?.[field].some(item => !owner.capabilities?.[field].some(parent => JSON.stringify({ ...parent, preload: undefined }) === JSON.stringify({ ...item, preload: undefined })))) throw new Error(`Nested ${field} exceed the owner allowlist.`);
+      }
+      if (current.settings.maxConcurrent > owner.settings.maxConcurrent || current.settings.maxDepth > owner.settings.maxDepth || current.settings.maxTurns > owner.settings.maxTurns || current.settings.timeoutSeconds > owner.settings.timeoutSeconds) throw new Error('Nested task limits exceed the owner limits.');
+      current = owner;
+    }
+  }
+  async delegate(callerId: string, params: NestedParams, callId: string, signal?: AbortSignal) {
+    const caller = await this.authorizeTool(Number(callerId) as ConversationId, 'subagent');
+    const definitions = await (this.options.definitions?.() ?? Promise.resolve(BUILTIN_AGENTS));
+    return nestedOperation(this, caller, definitions, params, callId, signal);
+  }
+  configuredModel(name: string): Model<Api> | undefined {
+    const split = name.indexOf('/');
+    return this.options.models.getModel(name.slice(0, split), name.slice(split + 1));
+  }
+  private cancelDescendants(state: State, id: string, run: number, seen = new Set<string>()): void {
+    if (seen.has(id)) return;
+    seen.add(id);
+    for (const child of Object.values(state.children)) {
+      if (child.delegation?.ownerId !== id || child.delegation.ownerRun !== run) continue;
+      if (isRunning(latest(child))) Object.assign(latest(child), { status: 'cancelled', error: 'The delegating task ended.', finishedAt: Date.now() });
+      this.cancelDescendants(state, String(child.id), latest(child).run, seen);
+    }
+  }
+  private async abortDescendants(id: string, run: number, seen = new Set<string>()): Promise<void> {
+    if (seen.has(id)) return;
+    seen.add(id);
+    for (const child of Object.values((await this.state()).children)) {
+      if (child.delegation?.ownerId !== id || child.delegation.ownerRun !== run) continue;
+      await this.abortDescendants(String(child.id), latest(child).run, seen);
+      if (latest(child).status !== 'cancelled') continue;
+      clearTimeout(this.deadlines.get(String(child.id))); this.deadlines.delete(String(child.id));
+      await (await this.harness.conversation(child.id, C))!.abort(C);
+      await this.finishTerminal(child);
+    }
+  }
   async state(): Promise<Readonly<State>> { return (await this.harness.snapshot(Children, C))!; }
   async saved(id: string | ConversationId): Promise<SavedChild> {
     if (!/^[1-9][0-9]*$/.test(String(id)) || !Number.isSafeInteger(Number(id))) throw new Error('Invalid child ID.');
@@ -328,7 +384,8 @@ export class SubagentRuntime {
     const settings = validateSubagentSettings(options.settings);
     const isolation = options.isolation ?? options.definition.isolation ?? settings.isolation;
     if (isolation !== 'shared' && isolation !== 'worktree') throw new Error('Unknown isolation mode.');
-    const worktree = isolation === 'worktree' ? await planWorktree(this.options.cwd,
+    const delegator = options.delegation ? await this.saved(options.delegation.ownerId) : undefined;
+    const worktree = delegator ? delegator.worktree : isolation === 'worktree' ? await planWorktree(this.options.cwd,
       this.options.worktreeRoot) : undefined;
     const contextMode = options.context ?? options.definition.context ?? settings.context;
     const history = contextMode === 'fork' ? forkMessages(options.history ?? []) : [];
@@ -343,12 +400,15 @@ export class SubagentRuntime {
       const anchor = await tx.createTask(Anchor, null, { ownership: { kind: 'conversation' }, background: true });
       const conversation = await tx.createConversation({ ownership: { kind: 'task', taskId: anchor } });
       const child: SavedChild = clone({ id: conversation.id, anchor, parentId: this.options.parentId,
-        ...spec, trust: resolveTrust(options.trust ?? options.definition.trust), context: contextMode, cwd: worktree ? join(worktree.path, worktree.relativeCwd) : this.options.cwd,
+        ...spec, settings, tools: options.tools.filter(name => name !== 'subagent' || (options.delegation?.depth ?? 1) < settings.maxDepth),
+        trust: resolveTrust(options.trust ?? options.definition.trust), context: contextMode, cwd: delegator?.cwd ?? (worktree ? join(worktree.path, worktree.relativeCwd) : this.options.cwd),
         parentCwd: this.options.cwd, ...(worktree ? { worktree } : {}), closed: false, runs: [] });
       child.instructions += worktree ? `\n\nYour isolated working directory is ${child.cwd}. Your branch is ${worktree.branch}, based on ${worktree.baseCommit}. Parent uncommitted changes are absent. Use paths inside this worktree. Do not modify another checkout or change branches.` : '';
+      child.instructions += `\n\nYour delegation depth is ${child.delegation?.depth ?? 1} of ${settings.maxDepth}. ${child.tools.includes('subagent') ? 'Use subagent to delegate independent tasks. Descendants cannot gain your missing tools or capabilities. Wait for all needed results before finishing. Unfinished descendants are cancelled when this task ends.' : 'Delegation is unavailable. Complete this task yourself.'}`;
       child.policy = createPolicy(child);
       child.runs.push(this.newRun(child, options.task));
       this.check(child);
+      if (child.delegation) this.checkDelegation(child, state);
       const split = child.model.indexOf('/');
       await configure(tx, conversation.id, { model: { provider: child.model.slice(0, split), modelId: child.model.slice(split + 1) },
         thinkingLevel: child.thinking, extensions: [this.extension], tools: this.extension.tools!.filter(tool => child.tools.includes(tool.name)),
@@ -365,10 +425,11 @@ export class SubagentRuntime {
     }
     return this.get(String(id));
   }
-  private newRun(child: Pick<SavedChild, 'id' | 'definition' | 'model' | 'thinking' | 'tools' | 'runs' | 'cwd' | 'worktree' | 'context' | 'capabilities' | 'trust'>, task: string): RunSnapshot {
+  private newRun(child: Pick<SavedChild, 'id' | 'definition' | 'model' | 'thinking' | 'tools' | 'runs' | 'cwd' | 'worktree' | 'context' | 'capabilities' | 'trust' | 'delegation'>, task: string): RunSnapshot {
     const run = child.runs.length + 1;
     return { id: String(child.id), trust: resolveTrust(child.trust), agent: child.definition.name, task, run, status: 'starting', model: child.model,
       thinking: child.thinking, tools: [...child.tools], startedAt: Date.now(), turns: 0, toolCalls: 0, output: '', tokens: 0, cost: 0,
+      depth: child.delegation?.depth ?? 1, ...(child.delegation ? { parentChildId: child.delegation.ownerId } : {}),
       capabilities: { skills: child.capabilities?.skills.map(skill => skill.name) ?? [], mcpTools: child.capabilities?.mcpTools.map(tool => tool.name) ?? [], hooks: child.capabilities?.hooks.map(hook => hook.name) ?? [] },
       context: child.context ?? 'fresh', cwd: child.cwd, ...(child.worktree ? { worktree: { path: child.worktree.path, branch: child.worktree.branch, baseCommit: child.worktree.baseCommit } } : {}),
       receipt: `${this.options.parentId}:${child.id}:${run}`, delivered: false, ...(this.store.path ? { sessionFile: this.store.path } : {}) };
@@ -395,6 +456,7 @@ export class SubagentRuntime {
         if (Object.values(state.children).filter(item => isRunning(latest(item))).length >= child.settings.maxConcurrent) throw new Error('Subagent concurrency limit reached.');
         child.runs.push(this.newRun(child, task));
         this.check(clone(child));
+        if (child.delegation) this.checkDelegation(clone(child), state);
         state.requests[`r:${requestId}`] = { id, run: child.runs.length, input };
       }, C);
     });
@@ -584,7 +646,8 @@ export class SubagentRuntime {
       const usage = await this.harness.snapshot(UsageDoc, child.id, C);
       const entries = await this.entries(String(child.id));
       const settled = await this.harness.commit(async tx => {
-        const current = latest((await tx.doc(Children)).children[child.id]);
+        const state = await tx.doc(Children);
+        const current = latest(state.children[child.id]);
         if (current.run !== run.run || !isRunning(current) || (current.steering?.length ?? 0) !== (run.steering?.length ?? 0)) return false;
         current.status = status.status === 'done' ? 'completed' : status.reason === 'aborted' ? 'cancelled' : 'failed';
         current.output = text; current.finishedAt = Date.now();
@@ -592,9 +655,11 @@ export class SubagentRuntime {
         current.toolCalls = entries.reduce((sum, entry) => sum + (entry.model?.filter(message => message.role === 'toolResult').length ?? 0), 0);
         current.tokens = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.totalTokens, 0);
         current.cost = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.cost.total, 0);
+        this.cancelDescendants(state, String(child.id), current.run);
         return true;
       }, C);
       if (settled) {
+        await this.abortDescendants(String(child.id), run.run);
         const currentChild = await this.saved(child.id);
         await this.finishTerminal(currentChild, currentChild.runs[run.run - 1]);
         if (latest(currentChild).run === run.run) { clearTimeout(this.deadlines.get(String(child.id))); this.deadlines.delete(String(child.id)); }
@@ -608,10 +673,13 @@ export class SubagentRuntime {
   private async stopTask(id: string, cancelled: boolean, reason: string): Promise<RunSnapshot> {
     // Save the terminal intent before asking Durable to abort. Recovery enforces this intent.
     await this.harness.commit(async tx => {
-      const child = (await tx.doc(Children)).children[id];
+      const state = await tx.doc(Children);
+      const child = state.children[id];
       if (!child) throw new Error(`Unknown child: ${id}.`);
       if (isRunning(latest(child))) Object.assign(latest(child), { status: cancelled ? 'cancelled' : 'failed', error: reason, finishedAt: Date.now() });
+      this.cancelDescendants(state, id, latest(child).run);
     }, C);
+    await this.abortDescendants(id, (await this.get(id)).run);
     for (const event of ['start', 'resume']) this.lifecycleSignals.get(`${id}:${(await this.get(id)).run}:${event}`)?.abort(new Error('Child task cancelled.'));
     clearTimeout(this.deadlines.get(id)); this.deadlines.delete(id);
     await (await this.harness.conversation(Number(id) as ConversationId, C))!.abort(C);
@@ -623,11 +691,14 @@ export class SubagentRuntime {
   async close(id: string): Promise<void> { return this.exclusive(id, () => this.closeChild(id)); }
   private async closeChild(id: string): Promise<void> {
     await this.harness.commit(async tx => {
-      const child = (await tx.doc(Children)).children[id];
+      const state = await tx.doc(Children);
+      const child = state.children[id];
       if (!child) throw new Error(`Unknown child: ${id}.`);
       child.closed = true;
       if (isRunning(latest(child))) Object.assign(latest(child), { status: 'cancelled', error: 'Closed by the parent.', finishedAt: Date.now() });
+      this.cancelDescendants(state, id, latest(child).run);
     }, C);
+    await this.abortDescendants(id, (await this.get(id)).run);
     for (const event of ['start', 'resume']) this.lifecycleSignals.get(`${id}:${(await this.get(id)).run}:${event}`)?.abort(new Error('Child closed.'));
     await (await this.harness.conversation(Number(id) as ConversationId, C))!.abort(C);
     await this.finishTerminal(await this.saved(id));
@@ -647,7 +718,7 @@ export class SubagentRuntime {
     return this.get(id);
   }
   async pending(): Promise<RunSnapshot[]> {
-    return Object.values((await this.state()).children).flatMap(child => child.closed ? [] : child.runs.filter(run =>
+    return Object.values((await this.state()).children).flatMap(child => child.closed || child.delegation ? [] : child.runs.filter(run =>
       !isRunning(run) && run.status !== 'cancelled' && !run.delivered).map(clone));
   }
   async pauseNotifications(paused: boolean): Promise<void> {

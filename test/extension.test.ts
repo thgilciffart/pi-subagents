@@ -19,17 +19,18 @@ async function harness(persistent = false) {
   const models = await ModelRuntime.create({ authPath: join(agentDir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
   const faux = fauxProvider({ tokensPerSecond: Infinity }); models.registerNativeProvider(faux.provider);
   let manager = persistent ? SessionManager.create(cwd, join(dir, 'sessions')) : SessionManager.inMemory(cwd);
-  const handlers = new Map<string, any>(), tools = new Map<string, any>(), commands = new Map<string, any>(), renderers = new Map<string, any>();
-  const messages: any[] = [], notifications: any[] = [], statuses: any[] = [];
+  const handlers = new Map<string, any>(), tools = new Map<string, any>(), commands = new Map<string, any>(), renderers = new Map<string, any>(), shortcuts = new Map<string, any>();
+  const messages: any[] = [], notifications: any[] = [], statuses: any[] = [], footers: any[] = [];
   let runtime!: SubagentRuntime, persistMessages = true, sequence = 0;
   const context: any = { cwd, mode: 'tui', hasUI: true, model: faux.models[0], modelRegistry: new ModelRegistry(models),
     scopedModels: [], thinkingLevel: 'off', isProjectTrusted: () => true, sessionManager: manager, isIdle: () => true,
     ui: { setStatus: (key: string, value: unknown) => statuses.push({ key, value }), notify: (text: string) => notifications.push(text),
-      select: async () => undefined, editor: async () => undefined } };
+      setFooter: (factory: any) => footers.push(factory), select: async () => undefined, editor: async () => undefined } };
   const pi: any = {
     events: createEventBus(), getCommands: () => [], getAllTools: () => [], getMcpServers: () => [], getActiveTools: () => [],
     on: (name: string, handler: any) => handlers.set(name, handler),
     registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command),
+    registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut), getSettings: () => ({}),
     registerMessageRenderer: (name: string, renderer: any) => renderers.set(name, renderer), getThinkingLevel: () => 'off',
     sendMessage: (message: any, options: any) => {
       messages.push({ message, options });
@@ -47,7 +48,7 @@ async function harness(persistent = false) {
       isError: result.isError ?? false, timestamp: Date.now(), details: result.details });
     return result;
   };
-  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, renderers, emit, tool, get runtime() { return runtime; }, pi,
+  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, shortcuts, emit, tool, get runtime() { return runtime; }, pi,
     persist: (value: boolean) => { persistMessages = value; },
     reload: async () => {
       await emit('session_shutdown');
@@ -63,7 +64,7 @@ describe('parent extension delivery and lifecycle', () => {
     const h = await harness(true);
     try {
       h.faux.setResponses([answer('Evidence from the child')]);
-      const spawned = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect' });
+      const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect' });
       expect(spawned.isError).not.toBe(true);
       const id = spawned.details.runs[0].id;
       await h.runtime.wait(id, 3000); await flush();
@@ -81,7 +82,7 @@ describe('parent extension delivery and lifecycle', () => {
     const h = await harness(true);
     try {
       h.persist(false); h.faux.setResponses([answer('Pending result')]);
-      const spawned = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect' });
+      const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect' });
       await h.runtime.wait(spawned.details.runs[0].id, 3000); await flush();
       expect(h.messages).toHaveLength(1); expect(await h.runtime.pending()).toHaveLength(1);
       h.persist(true); await h.reload(); await flush();
@@ -94,7 +95,7 @@ describe('parent extension delivery and lifecycle', () => {
     const h = await harness(true);
     try {
       h.faux.setResponses([answer('Waited result')]);
-      const spawned = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect' });
+      const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect' });
       await h.tool({ action: 'wait', id: spawned.details.runs[0].id });
       await h.emit('agent_settled', { aborted: false }); await flush();
       expect(h.messages).toHaveLength(0);
@@ -105,7 +106,7 @@ describe('parent extension delivery and lifecycle', () => {
     const h = await harness(true);
     try {
       h.faux.setResponses([answer('Unacknowledged tool result')]);
-      const spawned = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect' });
+      const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect' });
       await h.tool({ action: 'wait', id: spawned.details.runs[0].id }, false);
       await h.reload(); await flush(); expect(h.messages).toHaveLength(1);
       expect(h.messages[0].message.content).toContain('Unacknowledged tool result');
@@ -115,7 +116,7 @@ describe('parent extension delivery and lifecycle', () => {
     const h = await harness(true);
     try {
       h.faux.setResponses([answer('Done')]);
-      const params = { action: 'spawn', agent: 'scout', task: 'Inspect', requestId: 'stable-key' };
+      const params = { action: 'spawn', agent: 'Explore', task: 'Inspect', requestId: 'stable-key' };
       const first = await h.tool(params); await h.runtime.wait(first.details.runs[0].id, 3000);
       await h.reload();
       const second = await h.tool(params);
@@ -128,7 +129,7 @@ describe('parent extension delivery and lifecycle', () => {
     const h = await harness();
     try {
       for (const extra of [{ model: 'unknown/missing' }, { thinking: 'max' }, { tools: ['bash'] }]) {
-        expect((await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect', ...extra })).isError).toBe(true);
+        expect((await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', ...extra })).isError).toBe(true);
       }
       await mkdir(join(h.cwd, '.pi', 'agents'), { recursive: true });
       await writeFile(join(h.cwd, '.pi', 'agents', 'local.md'), '---\nname: local\ndescription: Local\n---\nInspect');
@@ -146,11 +147,11 @@ describe('parent extension delivery and lifecycle', () => {
       registerChildHook(h.pi, { name: 'policy', version: '1', permissions: 'read-only', replay: 'safe', project: false });
       h.faux.setResponses([context => { expect(JSON.stringify(context)).toContain('PARENT_SELECTED_SKILL'); return answer('Selected'); },
         context => { expect(JSON.stringify(context)).not.toContain('PARENT_SELECTED_SKILL'); return answer('Cleared'); }]);
-      const first = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect', skills: ['evidence'], hooks: ['policy'], requestId: 'selected' });
+      const first = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', skills: ['evidence'], hooks: ['policy'], requestId: 'selected' });
       expect(first.isError).not.toBe(true); await h.runtime.wait(first.details.runs[0].id, 3000);
       expect(first.details.runs[0].capabilities).toEqual({ skills: ['evidence'], hooks: ['policy'], mcpTools: [] });
       expect((await h.tool({ action: 'list' })).content[0].text).toContain('evidence');
-      expect((await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect', skills: [], hooks: [], requestId: 'selected' })).isError).toBe(true);
+      expect((await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', skills: [], hooks: [], requestId: 'selected' })).isError).toBe(true);
       await mkdir(join(h.agentDir, 'agents'), { recursive: true });
       await writeFile(join(h.agentDir, 'agents', 'selected.md'), '---\nname: selected\ndescription: Selected\nskills: [evidence]\nhooks: [policy]\n---\nInspect');
       const second = await h.tool({ action: 'spawn', agent: 'selected', task: 'Inspect', skills: [], hooks: [] });
@@ -172,9 +173,9 @@ describe('parent extension delivery and lifecycle', () => {
       await writeFile(join(h.agentDir, 'agents', 'filtered.md'), '---\nname: filtered\ndescription: Filtered\ndisabledSkills: [publish]\n---\nInspect');
       await writeFile(join(h.agentDir, 'agents', 'narrow.md'), '---\nname: narrow\ndescription: Narrow\nskills: [inspect]\n---\nInspect');
       const cases = [
-        { params: { agent: 'scout' }, skills: ['inspect', 'publish'] },
-        { params: { agent: 'scout', disabledSkills: ['publish'] }, skills: ['inspect'] },
-        { params: { agent: 'scout', skills: [] }, skills: [] },
+        { params: { agent: 'Explore' }, skills: ['inspect', 'publish'] },
+        { params: { agent: 'Explore', disabledSkills: ['publish'] }, skills: ['inspect'] },
+        { params: { agent: 'Explore', skills: [] }, skills: [] },
         { params: { agent: 'filtered' }, skills: ['inspect'] },
         { params: { agent: 'filtered', disabledSkills: [] }, skills: ['inspect', 'publish'] },
         { params: { agent: 'narrow', skills: 'inherit' }, skills: ['inspect', 'publish'] },
@@ -190,7 +191,7 @@ describe('parent extension delivery and lifecycle', () => {
         expect(run.capabilities.skills).toEqual(entry.skills);
         await h.runtime.wait(run.id, 3000);
       }
-      const conflict = { action: 'spawn', agent: 'scout', task: 'Inspect', requestId: 'exclusions', disabledSkills: ['publish'] };
+      const conflict = { action: 'spawn', agent: 'Explore', task: 'Inspect', requestId: 'exclusions', disabledSkills: ['publish'] };
       h.faux.setResponses([answer('Stable exclusions')]);
       const original = await h.tool(conflict); await h.runtime.wait(original.details.runs[0].id, 3000);
       expect((await h.tool({ ...conflict, disabledSkills: [] })).isError).toBe(true);
@@ -210,17 +211,17 @@ describe('parent extension delivery and lifecycle', () => {
       h.pi.getCommands = () => [{ name: 'skill:inspect', source: 'skill', sourceInfo: { path, scope: 'user' } }];
       registerChildHook(h.pi, { name: 'audit', version: '1', permissions: 'read-only', replay: 'safe', project: false, onStart: () => { starts++; } });
       h.faux.setResponses([context => { expect(JSON.stringify(context)).not.toContain('EXPLICIT_SKILL'); return answer('Empty'); }, answer('Explicit')]);
-      const none = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect', trust: 'untrusted', requestId: 'empty' });
+      const none = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', trust: 'untrusted', requestId: 'empty' });
       expect(none.isError).not.toBe(true); const id = none.details.runs[0].id; await h.runtime.wait(id, 3000);
       expect(none.details.runs[0].tools).toEqual([]); expect(none.details.runs[0].capabilities).toEqual({ skills: [], mcpTools: [], hooks: [] }); expect(starts).toBe(0);
-      const explicit = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect', trust: 'untrusted', tools: ['read'], skills: ['inspect'], hooks: ['audit'] });
+      const explicit = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', trust: 'untrusted', tools: ['read'], skills: ['inspect'], hooks: ['audit'] });
       await h.runtime.wait(explicit.details.runs[0].id, 3000); expect(starts).toBe(1);
       expect(explicit.details.runs[0].tools).toEqual(['read', 'skill_read']);
       for (const override of [{ skills: 'inherit' }, { mcpTools: 'inherit' }, { hooks: 'inherit' }, { mcpServers: ['docs'] }, { tools: ['bash'] }]) {
-        expect((await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect', trust: 'untrusted', ...override })).isError).toBe(true);
+        expect((await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', trust: 'untrusted', ...override })).isError).toBe(true);
       }
       await h.reload(); expect((await h.runtime.get(id)).trust).toBe('untrusted'); expect((await h.runtime.get(id)).tools).toEqual([]);
-      expect((await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect', trust: 'trusted', requestId: 'empty' })).isError).toBe(true);
+      expect((await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', trust: 'trusted', requestId: 'empty' })).isError).toBe(true);
     } finally { await h.cleanup(); }
   });
   test('omitted untrusted tool defaults allow a parent list within the declared ceiling and list respects model scope', async () => {
@@ -236,7 +237,7 @@ describe('parent extension delivery and lifecycle', () => {
       expect((await h.tool({ action: 'list' })).content[0].text).toContain('disabled tools: write');
       h.context.scopedModels = [{ model: { ...h.faux.models[0], id: 'only-other-model' } }];
       expect((await h.tool({ action: 'list' })).content[0].text).not.toContain('faux/faux-1');
-      const excluded = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect', isolation: 'worktree' });
+      const excluded = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', isolation: 'worktree' });
       expect(excluded.isError).toBe(true); expect(excluded.content[0].text).toContain('outside the parent session model scope');
       expect(await h.runtime.list()).toHaveLength(1);
     } finally { await h.cleanup(); }
@@ -251,7 +252,7 @@ describe('parent extension delivery and lifecycle', () => {
       }]);
       const controller = new AbortController(); h.context.signal = controller.signal;
       await h.emit('agent_start');
-      const spawned = await h.tool({ action: 'spawn', agent: 'scout', task: 'Inspect' }); await begun;
+      const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect' }); await begun;
       controller.abort(); await h.emit('agent_settled', { aborted: true }); await flush();
       expect((await h.runtime.get(spawned.details.runs[0].id)).status).toBe('cancelled');
       h.context.signal = undefined;
@@ -263,11 +264,34 @@ describe('parent extension delivery and lifecycle', () => {
 
 test('the shared status and transcript inspector stay within the terminal width', () => {
   const runs = Array.from({ length: 16 }, (_, i) => ({ id: String(i), agent: `worker${i}`, status: 'running', activity: 'read' })) as any;
-  expect(formatSubagentStatus(runs)).toContain('Agents 16');
+  expect(formatSubagentStatus(runs)).toContain('Subagents 16');
   expect(formatSubagentStatus(runs)!.length).toBeLessThan(120);
   const inspector = new SubagentInspector('Transcript', () => 'content\n'.repeat(1000), () => {}, () => {}, 20);
   try { for (const width of [1, 10, 80]) expect(inspector.render(width).every(row => visibleWidth(row) <= width)).toBe(true); }
   finally { inspector.dispose(); }
+});
+
+test('Ctrl+Alt+A opens the subagent picker', async () => {
+  const h = await harness();
+  try {
+    let title = '';
+    h.context.ui.select = async (value: string) => { title = value; return undefined; };
+    await h.shortcuts.get('ctrl+alt+a').handler(h.context);
+    expect(title).toContain('Subagents');
+    expect(title).toContain('persistent child ID');
+  } finally { await h.cleanup(); }
+});
+
+test('the first-line footer can switch back to the ordinary status row', async () => {
+  const h = await harness();
+  try {
+    expect(typeof h.footers.at(-1)).toBe('function');
+    h.context.ui.editor = async (_title: string, value: string) => JSON.stringify({ ...JSON.parse(value), indicatorPosition: 'status' });
+    await h.commands.get('agents').handler('config', h.context);
+    expect(h.footers.at(-1)).toBeUndefined();
+    await h.reload();
+    expect(h.footers.filter(Boolean)).toHaveLength(1);
+  } finally { await h.cleanup(); }
 });
 
 test('the parent tool accepts steering and forked context', async () => {
@@ -280,7 +304,7 @@ test('the parent tool accepts steering and forked context', async () => {
     const gate = new Promise<void>(resolve => { release = resolve; });
     let copied = false;
     h.faux.setResponses([async context => { copied = JSON.stringify(context).includes('PARENT_FORK_MARKER'); started(); await gate; return answer('First'); }, answer('Steered result')]);
-    const spawned = await h.tool({ action: 'spawn', agent: 'scout', task: 'Fork this conversation', context: 'fork' });
+    const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Fork this conversation', context: 'fork' });
     expect(spawned.isError).not.toBe(true); await begun;
     const id = spawned.details.runs[0].id;
     const steered = await h.tool({ action: 'steer', id, task: 'Change focus', requestId: 'focus' });

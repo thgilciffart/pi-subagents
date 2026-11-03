@@ -4,8 +4,9 @@ import type { Capabilities, Selection } from './capabilities.ts';
 export type Trust = 'trusted' | 'untrusted';
 export type ToolPolicy = {
   trust: Trust; permissions: Permissions; tools: string[]; skills: string[]; mcpTools: string[]; hooks: string[];
+  delegation?: { ownerId: string; ownerRun: number; depth: number };
 };
-export type PolicyChild = { trust?: Trust; definition: Pick<AgentDefinition, 'permissions'>; tools: string[]; capabilities?: Capabilities; policy?: ToolPolicy };
+export type PolicyChild = { trust?: Trust; definition: Pick<AgentDefinition, 'permissions'>; tools: string[]; capabilities?: Capabilities; policy?: ToolPolicy; delegation?: ToolPolicy['delegation'] };
 export function resolveTrust(value: unknown): Trust {
   if (value === undefined) return 'trusted';
   if (value !== 'trusted' && value !== 'untrusted') throw new Error('trust must be trusted or untrusted.');
@@ -39,12 +40,13 @@ export function resolveSelection(trust: Trust, definition: AgentDefinition, prov
 export function createPolicy(child: PolicyChild): ToolPolicy {
   return { trust: resolveTrust(child.trust), permissions: child.definition.permissions, tools: [...child.tools],
     skills: child.capabilities?.skills.map(skill => skill.name) ?? [], mcpTools: child.capabilities?.mcpTools.map(tool => tool.name) ?? [],
-    hooks: child.capabilities?.hooks.map(hook => hook.name) ?? [] };
+    hooks: child.capabilities?.hooks.map(hook => hook.name) ?? [], ...(child.delegation ? { delegation: { ...child.delegation } } : {}) };
 }
 export function checkPolicy(child: PolicyChild): void {
   const policy = child.policy;
   if (!policy) throw new Error('The saved child tool policy is missing.');
   const current = createPolicy(child);
+  if (JSON.stringify(policy.delegation) !== JSON.stringify(current.delegation)) throw new Error('The saved delegation ownership changed.');
   if (policy.trust !== current.trust || policy.permissions !== current.permissions) throw new Error('The saved trust policy or permission ceiling changed.');
   for (const field of ['tools', 'skills', 'mcpTools', 'hooks'] as const) {
     if (current[field].some(name => !policy[field].includes(name))) throw new Error(`Saved ${field} exceed the child allowlist.`);

@@ -3,7 +3,7 @@ import { capabilityPrompt, capabilityTools, ParentCapabilities } from './capabil
 import { NativeMcpBridge } from './mcp.ts';
 import { join } from 'node:path';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
-import { convertToLlm, getAgentDir, loadProjectContextFiles, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import { convertToLlm, getAgentDir, loadProjectContextFiles, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
 import { Type, type Static } from 'typebox';
 import { discoverAgents, THINKING_LEVELS, type Thinking } from './agents.ts';
@@ -11,7 +11,7 @@ import { readSubagentSettings, writeSubagentSettings } from './config.ts';
 import { parentRuntime, SubagentRuntime, isRunning, type RunSnapshot, type SavedChild } from './runtime.ts';
 import { openStore } from './storage.ts';
 import { parentReceipts, RESULT_MESSAGE } from './receipts.ts';
-import { compactText, formatSubagentStatus, oneLine, runSummary, SubagentInspector } from './ui.ts';
+import { compactText, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter, SUBAGENT_SHORTCUT } from './ui.ts';
 
 const Params = Type.Object({
   action: Type.Union(['list', 'spawn', 'send', 'steer', 'resume', 'status', 'wait', 'result', 'transcript', 'cancel', 'close'].map(value => Type.Literal(value))),
@@ -51,6 +51,13 @@ export default function subagents(pi: ExtensionAPI, options: {
   let capabilities: ParentCapabilities | undefined;
   let sessionId: string | undefined;
   let ready: Promise<void> = Promise.resolve();
+  let ownsFooter = false;
+  function configureFooter(context: ExtensionContext, position: 'footer-right' | 'status'): void {
+    if (position === 'footer-right' && context.hasUI && context.mode === 'tui') {
+      context.ui.setFooter((tui, theme, data) => subagentFooter(() => ctx ?? context, data, theme, () => tui.requestRender(), () => pi.getSettings().compaction?.enabled !== false));
+      ownsFooter = true;
+    } else if (ownsFooter) { context.ui.setFooter(undefined); ownsFooter = false; }
+  }
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
   const queued = new Set<string>();
@@ -85,13 +92,15 @@ export default function subagents(pi: ExtensionAPI, options: {
     noticeTimer = undefined; queued.clear(); reading.clear();
     const old = runtime; runtime = undefined;
     ctx?.ui.setStatus('pi-subagents', undefined);
+    if (ownsFooter) { ctx?.ui.setFooter(undefined); ownsFooter = false; }
     await old?.dispose();
     ctx = context; sessionId = context?.sessionManager.getSessionId();
     if (!context) return;
+    configureFooter(context, (await readSubagentSettings(configPath)).indicatorPosition);
     const models = parentRuntime(context);
     const store = await (options.openStore ?? openStore)(agentDir, context.sessionManager.getSessionFile(), sessionId!, context.cwd);
     capabilities = new ParentCapabilities(pi, () => ctx!, new NativeMcpBridge(pi, () => ctx!, agentDir));
-    runtime = await SubagentRuntime.open(store, { capabilities, parentId: sessionId!, cwd: context.cwd, models,
+    runtime = await SubagentRuntime.open(store, { capabilities, definitions: async () => (await definitions(ctx!)).agents, parentId: sessionId!, cwd: context.cwd, models,
       allow: child => allow(child, ctx!), changed, error: report });
     options.onRuntime?.(runtime);
     await runtime.acknowledge(parentReceipts(context));
@@ -141,15 +150,16 @@ export default function subagents(pi: ExtensionAPI, options: {
     const contextFiles = context.isProjectTrusted() ? loadProjectContextFiles({ cwd: context.cwd, agentDir }) : [];
     const isolation = params.isolation ?? definition.isolation ?? settings.isolation;
     if (isolation === 'worktree' && !context.isProjectTrusted()) throw new Error('Project trust is required to create a child worktree.');
+    const sharedInstructions = contextFiles.map(file => `Project instructions from ${file.path}:\n${file.content}`).join('\n\n');
     const instructions = `You are the ${definition.name} subagent. Your parent owns the user conversation.
 Work only on the assigned task. Return questions and blockers to the parent in your answer.
 Other agents may share this checkout. Preserve their edits. Never repeat an interrupted write or command without checking its effects.
 Your trust policy is ${trust}. Your permission profile is ${definition.permissions}. Available tools: ${tools.join(', ') || 'none'}.
-\n${definition.prompt}\n\n${contextFiles.map(file => `Project instructions from ${file.path}:\n${file.content}`).join('\n\n')}\n\n${capabilityPrompt(selectedCapabilities)}`;
+\n${definition.prompt}\n\n${sharedInstructions}\n\n${capabilityPrompt(selectedCapabilities)}`;
     const contextMode = params.context ?? definition.context ?? settings.context;
     const history = contextMode === 'fork' ? convertToLlm(context.sessionManager.buildSessionProjection().messages) : undefined;
     return owner.spawn({ definition, trust, capabilities: selectedCapabilities, task: params.task, tools, settings, model: `${model.provider}/${model.id}`, thinking,
-      instructions, isolation, context: contextMode, history, forkParentLeaf: contextMode === 'fork' ? context.sessionManager.getLeafId() ?? undefined : undefined, projectTrusted: [...selectedCapabilities.skills, ...selectedCapabilities.mcpTools, ...selectedCapabilities.hooks].some(item => item.project) || isolation === 'worktree' || contextFiles.length > 0 || definition.source.startsWith(join(context.cwd, '.pi')) }, requestId, fingerprint(params));
+      instructions, sharedInstructions, isolation, context: contextMode, history, forkParentLeaf: contextMode === 'fork' ? context.sessionManager.getLeafId() ?? undefined : undefined, projectTrusted: [...selectedCapabilities.skills, ...selectedCapabilities.mcpTools, ...selectedCapabilities.hooks].some(item => item.project) || isolation === 'worktree' || contextFiles.length > 0 || definition.source.startsWith(join(context.cwd, '.pi')) }, requestId, fingerprint(params));
   }
 
   pi.on('session_start', (_event, context) => { ready = ready.catch(() => {}).then(() => reset(context)); return ready; });
@@ -170,7 +180,7 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
   });
 
   pi.registerTool<typeof Params, Details>({ name: 'subagent', label: 'Subagent', parameters: Params, executionMode: 'sequential',
-    description: 'Manage named subagents with fresh or forked conversations, saved progress, and enforced tool permissions. list shows definitions, configured models, skills, MCP tools, and trusted child hook adapters. Set trust untrusted for deny-by-default delegation and specify exact tools, skills, MCP tools, and hooks. Trusted children inherit permitted capabilities by default; disabledSkills excludes names, skills [] disables all, and an explicit skills list preloads a subset. Permitted parent MCP tools and registered child hooks are inherited too; use disabledMcpTools or disabledHooks for exclusions, or an empty mcpTools or hooks list to opt out. spawn starts parallel work with fresh context or context fork; send gives an idle child another task in the same conversation; steer adds direction to an active task at its next safe boundary. spawn isolation worktree uses a dedicated branch at current HEAD. resume recovers unfinished work, without restarting completed, cancelled, or closed tasks. status, wait, result, transcript, cancel, and close inspect or control children. Results return automatically. Reuse requestId after an uncertain spawn, send, or steer. Children share files unless isolated in a worktree, cannot delegate, and return user questions to you. Tool permissions are not an OS sandbox.',
+    description: 'Manage named subagents with fresh or forked conversations, saved progress, and enforced tool permissions. list shows definitions, configured models, skills, MCP tools, and trusted child hook adapters. Set trust untrusted for deny-by-default delegation and specify exact tools, skills, MCP tools, and hooks. Trusted children inherit permitted capabilities by default; disabledSkills excludes names, skills [] disables all, and an explicit skills list preloads a subset. Permitted parent MCP tools and registered child hooks are inherited too; use disabledMcpTools or disabledHooks for exclusions, or an empty mcpTools or hooks list to opt out. spawn starts parallel work with fresh context or context fork; send gives an idle child another task in the same conversation; steer adds direction to an active task at its next safe boundary. spawn isolation worktree uses a dedicated branch at current HEAD. resume recovers unfinished work, without restarting completed, cancelled, or closed tasks. status, wait, result, transcript, cancel, and close inspect or control children. Results return automatically. Reuse requestId after an uncertain spawn, send, or steer. Children share files unless isolated in a worktree, can delegate within their saved permissions and depth limit, and return user questions to you. Tool permissions are not an OS sandbox.',
     promptSnippet: 'Delegate self-contained tasks to named agents and recover saved children.',
     promptGuidelines: [
       'Delegate only when the user or applicable instructions authorize it. Use list to check permissions and configured models. Choose trust untrusted for children that need an explicit minimal allowlist; trust never expands the named permission profile.',
@@ -224,11 +234,11 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
   pi.registerMessageRenderer<Details>(RESULT_MESSAGE, (message, { expanded }, theme) => expanded ?
     new Text(typeof message.content === 'string' ? message.content : JSON.stringify(message.content), 0, 0) : compactText(theme.fg('dim', message.details?.summary ?? 'Subagents finished')));
 
-  async function inspect(context: ExtensionCommandContext, title: string, content: string): Promise<void> {
+  async function inspect(context: ExtensionContext, title: string, content: string): Promise<void> {
     if (context.mode !== 'tui') { context.ui.notify(clip(content, 6000), 'info'); return; }
     await context.ui.custom<void>((tui, _theme, _keys, done) => new SubagentInspector(title, () => content, done, () => tui.requestRender(), tui.terminal.rows));
   }
-  async function command(args: string, context: ExtensionCommandContext): Promise<void> {
+  async function command(args: string, context: ExtensionContext): Promise<void> {
     try {
       const owner = await use(context);
       const [action, id] = args.trim().split(/\s+/);
@@ -236,7 +246,10 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
         const settings = await readSubagentSettings(configPath);
         if (!context.hasUI) { context.ui.notify(`${configPath}\n${JSON.stringify(settings, null, 2)}`, 'info'); return; }
         const value = await context.ui.editor('Subagent settings', JSON.stringify(settings, null, 2));
-        if (value !== undefined) await writeSubagentSettings(configPath, JSON.parse(value));
+        if (value !== undefined) {
+          await writeSubagentSettings(configPath, JSON.parse(value));
+          configureFooter(context, (await readSubagentSettings(configPath)).indicatorPosition);
+        }
       } else if (action === 'stop') {
         if (id) await owner.stop(id);
         else { stopped = true; await owner.pauseNotifications(true); await owner.cancelAll(); }
@@ -252,10 +265,11 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
       else {
         const items = new Map((await owner.list()).map(run => [runSummary(run), run.id]));
         items.set('Browse agent definitions', 'list'); items.set('Edit settings', 'config'); items.set('Resume unfinished tasks', 'resume');
-        const selected = await context.ui.select('Subagents', [...items.keys()]);
+        const selected = await context.ui.select('Subagents · # is the persistent child ID', [...items.keys()]);
         if (selected) await command(items.get(selected)!, context);
       }
     } catch (error) { report(error); }
   }
   pi.registerCommand('agents', { description: 'Inspect subagents, transcripts, recovery, and settings', handler: command });
+  pi.registerShortcut(SUBAGENT_SHORTCUT, { description: 'Open the subagent picker', handler: context => command('', context) });
 }

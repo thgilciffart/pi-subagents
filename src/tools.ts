@@ -6,11 +6,13 @@ import type { Context } from '@earendil-works/chord/context';
 import { Type } from 'typebox';
 import { emptyCapabilities, type ParentCapabilities } from './capabilities.ts';
 import type { SavedChild } from './runtime.ts';
+import { NestedParams, type NestedParams as NestedInput } from './nested.ts';
 
 const factories = { read: createReadTool, grep: createGrepTool, find: createFindTool, ls: createLsTool,
   edit: createEditTool, write: createWriteTool, bash: createBashTool };
 
-export function childTools(cwd: string, authorize: (id: ConversationId, name: string) => Promise<SavedChild>, capabilities?: ParentCapabilities): ToolRegistration[] {
+export function childTools(cwd: string, authorize: (id: ConversationId, name: string) => Promise<SavedChild>, capabilities?: ParentCapabilities,
+  delegate?: (child: SavedChild, args: NestedInput, callId: string, signal?: AbortSignal) => Promise<ToolExecutionResult>): ToolRegistration[] {
   async function execute(name: string, args: unknown, api: ToolExecutionApi, context: Context,
     run: (child: SavedChild) => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> {
     context.abortSignal?.throwIfAborted();
@@ -47,6 +49,13 @@ export function childTools(cwd: string, authorize: (id: ConversationId, name: st
       const path = await capabilities.skillPath(child.capabilities ?? emptyCapabilities(), args.skill, args.path);
       const result = await createReadTool(child.cwd).execute(api.callId, { path, offset: args.offset, limit: args.limit }, context.abortSignal);
       return { output: result.content };
+    }),
+  }));
+  tools.push(defineTool({ name: 'subagent', description: 'Delegate focused work within your saved permissions. list shows roles and your direct children. spawn creates a child; wait or result reads its output. send and steer direct your own children. cancel and close stop them. Always wait for needed results before finishing. The shared concurrency and depth limits apply to the whole tree. Questions return through you to the main parent.',
+    parameters: NestedParams, replay: 'safe',
+    execute: (args, api, context) => execute('subagent', args, api, context, child => {
+      if (!delegate) throw new Error('Nested delegation is unavailable.');
+      return delegate(child, args, api.callId, context.abortSignal);
     }),
   }));
   tools.push(defineTool({ name: 'mcp', description: 'Call one of the exact parent-selected MCP tools described in your instructions. Uncertain calls are never automatically repeated.',

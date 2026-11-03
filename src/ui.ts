@@ -1,4 +1,7 @@
-import { Key, matchesKey, stripTerminalSequences, Text, truncateToWidth, type Component } from '@earendil-works/pi-tui';
+import { Key, matchesKey, stripTerminalSequences, Text, truncateToWidth, visibleWidth, type Component } from '@earendil-works/pi-tui';
+import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from '@earendil-works/pi-coding-agent';
+import { homedir } from 'node:os';
+import { relative, isAbsolute, sep } from 'node:path';
 import { isRunning, type RunSnapshot } from './runtime.ts';
 
 export function oneLine(value: string): string {
@@ -8,8 +11,60 @@ export function oneLine(value: string): string {
 export function formatSubagentStatus(runs: RunSnapshot[]): string | undefined {
   const active = runs.filter(isRunning);
   if (!active.length) return undefined;
-  const names = active.slice(0, 3).map(run => `${oneLine(run.agent).slice(0, 20)}${run.activity ? `:${oneLine(run.activity)}` : ''}`).join(', ');
-  return `Agents ${active.length} · ${names}${active.length > 3 ? ` +${active.length - 3}` : ''} · /agents`;
+  return `Subagents ${active.length} · Ctrl+Alt+A`;
+}
+
+export const SUBAGENT_SHORTCUT = 'ctrl+alt+a';
+
+/** Keep the right-hand label visible, shortening the left side first. */
+export function footerRow(left: string, right: string, width: number): string {
+  if (width < 1) return '';
+  if (!visibleWidth(right)) return truncateToWidth(left, width);
+  const label = truncateToWidth(right, width);
+  const space = Math.max(0, width - visibleWidth(label) - 2);
+  const start = space ? truncateToWidth(left, space) : '';
+  return start + ' '.repeat(Math.max(0, width - visibleWidth(start) - visibleWidth(label))) + label;
+}
+
+export function subagentFooter(context: () => ExtensionContext, data: ReadonlyFooterDataProvider, theme: Theme,
+  render: () => void, autoCompact: () => boolean): Component & { dispose(): void } {
+  const unsubscribe = data.onBranchChange(render);
+  const count = (value: number) => value < 1000 ? String(value) : `${Number((value / 1000).toFixed(1))}k`;
+  let cacheKey = '', totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  return {
+    dispose: unsubscribe, invalidate() {},
+    render(width) {
+      if (width < 1) return [];
+      const ctx = context(), session = ctx.sessionManager;
+      const key = `${session.getSessionId()}:${session.getLeafId()}:${session.getEntries().length}`;
+      if (cacheKey !== key) {
+        cacheKey = key; totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+        for (const entry of session.getEntries()) {
+          const usage = entry.type === 'usage' || entry.type === 'compaction' || entry.type === 'branch_summary' ? entry.usage :
+            entry.type === 'message' && (entry.message.role === 'assistant' || entry.message.role === 'toolResult') ? entry.message.usage : undefined;
+          if (!usage) continue;
+          for (const field of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) totals[field] += usage[field];
+          totals.cost += usage.cost.total;
+        }
+      }
+      const offset = relative(homedir(), ctx.cwd);
+      const home = !offset || (offset !== '..' && !offset.startsWith(`..${sep}`) && !isAbsolute(offset));
+      let directory = home ? `~${offset ? sep + offset : ''}` : ctx.cwd;
+      const branch = data.getGitBranch(), name = session.getSessionName();
+      if (branch) directory += ` (${oneLine(branch)})`;
+      if (name) directory += ` · ${oneLine(name)}`;
+      const statuses = data.getExtensionStatuses();
+      const first = footerRow(theme.fg('dim', oneLine(directory)), theme.fg('accent', statuses.get('pi-subagents') ?? ''), width);
+      const usage = ctx.getContextUsage();
+      const contextLabel = `${usage?.percent == null ? '?' : usage.percent.toFixed(1)}%/${count(usage?.contextWindow ?? ctx.model?.contextWindow ?? 0)}${autoCompact() ? ' (auto)' : ''}`;
+      const stats = [`↑${count(totals.input)}`, `↓${count(totals.output)}`, `R${count(totals.cacheRead)}`, `W${count(totals.cacheWrite)}`, `$${totals.cost.toFixed(3)}`, contextLabel].join(' ');
+      const model = `${ctx.model?.id ?? 'no-model'}${ctx.thinkingLevel ? ` · ${ctx.thinkingLevel}` : ''}`;
+      const rows = [first, footerRow(theme.fg('dim', stats), theme.fg('dim', oneLine(model)), width)];
+      const others = [...statuses].filter(([key]) => key !== 'pi-subagents').sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => oneLine(value));
+      if (others.length) rows.push(truncateToWidth(theme.fg('dim', others.join(' ')), width));
+      return rows;
+    },
+  };
 }
 
 export function compactText(value: string): Component {
@@ -17,7 +72,7 @@ export function compactText(value: string): Component {
 }
 
 export function runSummary(run: RunSnapshot): string {
-  return `${run.id} ${run.agent} · ${run.status} · ${run.toolCalls} tools${run.error ? ` · ${oneLine(run.error)}` : ''}`;
+  return `#${run.id} ${run.agent}${run.parentChildId ? ` · parent #${run.parentChildId}` : ''} · ${run.status} · ${run.toolCalls} tool calls${run.error ? ` · ${oneLine(run.error)}` : ''}`;
 }
 
 /** Opens only on request. The ordinary conversation has no per-child panels. */

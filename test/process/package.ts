@@ -31,7 +31,7 @@ try {
     const stream = createAssistantMessageEventStream();
     const spawned = context.messages.find(message => message.role === 'toolResult' && message.toolName === 'subagent');
     const id = spawned && spawned.role === 'toolResult' ? (spawned.details as any)?.runs?.[0]?.id : undefined;
-    const message = requests === 1 ? answer(fauxToolCall('subagent', { action: 'spawn', agent: 'scout', task: 'Check packaged extension' }), { stopReason: 'toolUse' }) :
+    const message = requests === 1 ? answer(fauxToolCall('subagent', { action: 'spawn', agent: 'Explore', task: 'Check packaged extension' }), { stopReason: 'toolUse' }) :
       requests === 2 ? answer(fauxToolCall('subagent', { action: 'wait', id, timeoutMs: 3000 }), { stopReason: 'toolUse' }) : answer('Parent done');
     if (requests > 3) throw new Error('Unexpected duplicate turn from the packaged extension');
     stream.push({ type: 'done', reason: message.stopReason as 'stop' | 'toolUse', message }); return stream;

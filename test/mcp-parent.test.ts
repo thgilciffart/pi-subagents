@@ -40,7 +40,7 @@ test('a real Pi parent delegates its native MCP tool to a background Durable chi
     f.respond(answer(fauxToolCall('mcp', { tool: 'mcp__fixture__inspect', args: {} }), { stopReason: 'toolUse' }),
       context => { expect(JSON.stringify(context)).toContain(`Local MCP inspect in ${f.cwd}`); return answer('Native MCP evidence collected'); });
     const delegate = parent.agent.state.tools.find(tool => tool.name === 'subagent')!;
-    const spawned = await delegate.execute('spawn-native-mcp', { action: 'spawn', agent: 'scout', task: 'Inspect using the configured server', mcpServers: ['fixture'] });
+    const spawned = await delegate.execute('spawn-native-mcp', { action: 'spawn', agent: 'Explore', task: 'Inspect using the configured server', mcpServers: ['fixture'] });
     expect((spawned as any).isError).not.toBe(true);
     const run = await childRuntime!.wait((spawned.details as any).runs[0].id, 3000);
     expect(run.output).toBe('Native MCP evidence collected');

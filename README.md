@@ -10,7 +10,19 @@ This is a standalone package, separate from pi-qol. It targets Pi 1.4.x and Node
 pi install git:github.com/thgilciffart/pi-subagents
 ```
 
-Reload Pi, then ask the parent to delegate a task. `/agents` opens the child picker. `/agents <id>` opens a transcript.
+Reload Pi, then ask the parent to delegate a task. `/agents` or Ctrl+Alt+A opens the child picker. `/agents <id>` opens a transcript.
+
+## Built-in agents
+
+The built-in roles follow [Claude Code's subagent roles](https://code.claude.com/docs/en/sub-agents#built-in-subagents):
+
+- `Explore` finds files, traces code paths, and reports evidence. It cannot edit files or run commands.
+- `Plan` researches requirements and returns an implementation plan. It cannot edit files or run commands.
+- `general-purpose` handles research, implementation, commands, and verification.
+
+All three can delegate within their saved permissions and depth limit. They inherit the parent model and thinking level unless a launch, definition, or setting overrides them. Their instructions are written for Pi; Claude Code's private prompts and helper agents are not included.
+
+These names replace `scout`, `reviewer`, and `worker` for new launches. Saved children retain their original names, instructions, and permissions. Custom definitions can still use those names.
 
 ## Delegate a task
 
@@ -19,7 +31,7 @@ The parent calls the `subagent` tool:
 ```json
 {
 	"action": "spawn",
-	"agent": "worker",
+	"agent": "general-purpose",
 	"trust": "trusted",
 	"task": "Update the login form. Own src/login.ts and preserve other edits.",
 	"context": "fork",
@@ -34,6 +46,20 @@ Steering uses `action: "steer"`, the child `id`, and a `task` message. It reache
 
 Use a stable `requestId` for `spawn`, `send`, and `steer`. Retrying the same request returns its original run. Reusing a key with different arguments fails.
 
+## Delegate from a child
+
+A child with the `subagent` tool can create and manage its own direct children. The main parent can inspect and control the whole tree. Child calls support `list`, `spawn`, `send`, `steer`, `status`, `wait`, `result`, `transcript`, `cancel`, and `close`.
+
+Nested `spawn` accepts `agent`, `task`, `requestId`, `model`, `thinking`, `trust`, `tools`, `skills`, `mcpTools`, `hooks`, and `context`. Capability fields accept exact name lists. Omitted selections inherit permitted capabilities from the immediate parent for trusted children. Untrusted children default to empty allowlists. Definitions can narrow those selections further.
+
+Descendants cannot gain tools, capabilities, trust, or a permission profile that their immediate parent lacks. A read-only Explore agent can delegate to general-purpose, but that descendant remains read-only. All generations share one concurrency limit. Running ancestors occupy slots too; a spawn over the limit fails instead of waiting for capacity.
+
+`maxDepth` defaults to three child layers below the main parent. Set it to `1` to disable nested delegation. The `subagent` tool is absent at the depth limit and can also be removed with `disabledTools: [subagent]`.
+
+Each nested child has a saved ID, owner ID, owner task number, and depth. Stable request keys prevent duplicate creation after tool replay. Results return through the spawning child's tool calls; they do not create a second automatic notification in the main chat. Wait for needed results before finishing. Completion, failure, cancellation, or closure cancels unfinished descendants, and recovery preserves that intent.
+
+Nested children use their immediate parent's working directory and worktree. They cannot choose another checkout. `context: "fork"` copies that parent's model-visible history while retaining the descendant's own instructions and narrower tools. Questions pass back through the spawning agent to the main parent.
+
 ## Choose trust and permissions
 
 The parent chooses `trust` at launch. Agent definitions can provide a default. Omission means `trusted`.
@@ -46,7 +72,7 @@ For read-only delegation with an explicit tool list:
 ```json
 {
 	"action": "spawn",
-	"agent": "scout",
+	"agent": "Explore",
 	"trust": "untrusted",
 	"tools": ["read", "grep", "find", "ls"],
 	"task": "Trace the login flow and return file references.",
@@ -62,11 +88,11 @@ Trust never expands the named agent's permission ceiling:
 
 | Profile | Built-in tools | Built-in agents |
 | --- | --- | --- |
-| `read-only` | `read`, `grep`, `find`, `ls` | `scout`, `reviewer` |
-| `edit` | Read tools, `edit`, `write` | `worker` |
-| `full` | Edit tools and `bash` | Requires a custom definition |
+| `read-only` | `read`, `grep`, `find`, `ls`, `subagent` | `Explore`, `Plan` |
+| `edit` | Read tools, `edit`, `write` | Custom definitions |
+| `full` | Edit tools and `bash` | `general-purpose` |
 
-A trusted scout remains read-only. An untrusted child can use only explicitly allowed tools within its profile. Tool profiles and trust policies are not operating-system sandboxes. File reads can access paths allowed by their tools, and shell commands run with the Pi process's permissions.
+A trusted Explore agent remains read-only. An untrusted child can use only explicitly allowed tools within its profile. Tool profiles and trust policies are not operating-system sandboxes. File reads can access paths allowed by their tools, and shell commands run with the Pi process's permissions.
 
 ## Select capabilities
 
@@ -178,7 +204,13 @@ Result receipts remain pending until the native parent transcript records them. 
 
 Tasks contain one to 50,000 characters. `wait` defaults to 30 seconds and accepts one to 60,000 milliseconds. Aborting a wait does not cancel the child. Token and cost totals cover the child conversation.
 
-`/agents` opens the picker. `/agents <id>` opens the transcript. `/agents list` inspects definitions, `/agents config` edits settings, `/agents resume [id]` recovers work, and `/agents stop [id]` cancels one or all active children. Outside the terminal UI, inspection uses text notifications.
+`/agents` or Ctrl+Alt+A opens the picker. `/agents <id>` opens the transcript. `/agents list` inspects definitions, `/agents config` edits settings, `/agents resume [id]` recovers work, and `/agents stop [id]` cancels one or all active children. Numbers prefixed with `#` are persistent child IDs, not list positions. IDs can have gaps because Pi Durable shares its record counter with other records. Nested entries show their parent ID. Outside the terminal UI, inspection uses text notifications.
+
+## Status indicator
+
+While children run, `Subagents N · Ctrl+Alt+A` appears on the right of the first footer line. The count includes nested children. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
+
+This placement uses Pi's custom-footer slot. If another extension supplies your footer, set `indicatorPosition` to `"status"` to use the ordinary extension-status row instead. Change settings with `/agents config`. Ctrl+Alt+A opens the picker in either mode. Alt+Left retains Pi's word-navigation binding.
 
 ## Settings
 
@@ -187,6 +219,8 @@ Global defaults live at `<Pi agent directory>/subagents/settings.json`:
 ```json
 {
 	"maxConcurrent": 4,
+	"maxDepth": 3,
+	"indicatorPosition": "footer-right",
 	"maxTurns": 20,
 	"timeoutSeconds": 300,
 	"model": "current",
@@ -196,7 +230,7 @@ Global defaults live at `<Pi agent directory>/subagents/settings.json`:
 }
 ```
 
-`maxConcurrent` accepts 1 to 16. `maxTurns` accepts 1 to 100 model-request attempts, including compaction and recovery. `timeoutSeconds` accepts 1 to 3,600 and includes downtime. New tasks use current settings; existing tasks retain their saved settings. Automatic provider retries are disabled.
+`maxConcurrent` accepts 1 to 16 active tasks across the whole tree. `maxDepth` accepts 1 to 8 child layers. `indicatorPosition` accepts `footer-right` or `status`. `maxTurns` accepts 1 to 100 model-request attempts, including compaction and recovery. `timeoutSeconds` accepts 1 to 3,600 and includes downtime. New tasks use current settings; existing tasks retain their saved settings. Automatic provider retries are disabled.
 
 ## Compatibility and development
 

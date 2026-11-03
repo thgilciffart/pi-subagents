@@ -35,7 +35,7 @@ test.each(['fresh', 'fork'] as const)('a real Pi parent keeps working and receiv
       contexts.push(context); requests++;
       const stream = createAssistantMessageEventStream();
       const message = requests === 1 ? fauxAssistantMessage(fauxToolCall('subagent', {
-        action: 'spawn', agent: 'scout', task: 'Collect evidence', requestId: 'parent-delegation', context: contextMode, ...(contextMode === 'fork' ? { skills: ['evidence'] } : {}), hooks: ['policy'],
+        action: 'spawn', agent: 'Explore', task: 'Collect evidence', requestId: 'parent-delegation', context: contextMode, ...(contextMode === 'fork' ? { skills: ['evidence'] } : {}), hooks: ['policy'],
       }), { stopReason: 'toolUse' }) : fauxAssistantMessage(requests === 2 ? 'Independent work finished' : 'Evidence incorporated');
       if (requests > 3) throw new Error('Duplicate parent continuation');
       stream.push({ type: 'done', reason: message.stopReason as 'stop' | 'toolUse', message });
@@ -43,7 +43,7 @@ test.each(['fresh', 'fork'] as const)('a real Pi parent keeps working and receiv
     };
     let settled!: () => void; const finished = new Promise<void>(resolve => { settled = resolve; });
     parent.subscribe(event => { if (event.type === 'agent_settled' && requests === 3) settled(); });
-    await parent.prompt('Delegate to scout and continue independent work.');
+    await parent.prompt('Delegate to Explore and continue independent work.');
     expect(requests).toBe(2); release();
     const timer = setTimeout(settled, 3000);
     try { await finished; } finally { clearTimeout(timer); }
@@ -52,7 +52,7 @@ test.each(['fresh', 'fork'] as const)('a real Pi parent keeps working and receiv
     expect(childContext).toContain('evidence');
     if (contextMode === 'fresh') expect(childContext).toContain('Inherited skills are available on demand');
     expect(childContext).toContain('Selected child hooks: policy');
-    expect(childContext.includes('Delegate to scout and continue independent work.')).toBe(contextMode === 'fork');
+    expect(childContext.includes('Delegate to Explore and continue independent work.')).toBe(contextMode === 'fork');
     if (contextMode === 'fork') expect(childContext).toContain('had no saved result at the fork point');
     expect(JSON.stringify(contexts[2])).toContain('Asynchronous child evidence');
     expect(errors).toEqual([]);

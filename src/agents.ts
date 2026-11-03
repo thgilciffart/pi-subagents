@@ -7,9 +7,9 @@ import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Thinking = typeof THINKING_LEVELS[number];
 export const PERMISSION_TOOLS = {
-  'read-only': ['read', 'grep', 'find', 'ls'],
-  edit: ['read', 'grep', 'find', 'ls', 'edit', 'write'],
-  full: ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash'],
+  'read-only': ['read', 'grep', 'find', 'ls', 'subagent'],
+  edit: ['read', 'grep', 'find', 'ls', 'edit', 'write', 'subagent'],
+  full: ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash', 'subagent'],
 } as const;
 export type ContextMode = 'fresh' | 'fork';
 export type Isolation = 'shared' | 'worktree';
@@ -31,12 +31,15 @@ export type AgentDefinition = Selection & {
 }
 
 export const BUILTIN_AGENTS: AgentDefinition[] = [
-  { name: 'scout', description: 'Find relevant code and explain how it works.', prompt: 'Inspect the codebase. Return the relevant files, symbols, and a concise explanation with evidence.',
+  { name: 'Explore', description: 'Find files, trace code paths, and explain how the codebase works without changing files.',
+    prompt: 'Explore the assigned codebase question. Return relevant files, symbols, and evidence. Do not modify files or run shell commands. Delegate independent read-only investigations when useful.',
     permissions: 'read-only', tools: [...PERMISSION_TOOLS['read-only']], source: 'builtin' },
-  { name: 'reviewer', description: 'Review code for bugs and missing checks.', prompt: 'Review the assigned change. Report actionable bugs with file locations and explain their impact. Do not edit files.',
+  { name: 'Plan', description: 'Research the codebase and propose an implementation plan without changing files.',
+    prompt: 'Research the requirements and existing implementation. Return a concrete plan, affected files, tradeoffs, and verification steps. Do not implement the plan. Delegate focused read-only research when useful.',
     permissions: 'read-only', tools: [...PERMISSION_TOOLS['read-only']], source: 'builtin' },
-  { name: 'worker', description: 'Implement changes in assigned files without shell access.', prompt: 'Implement the assigned task in the files you own. Other agents may share this checkout. Preserve their changes. Report changes and checks the parent still needs to run.',
-    permissions: 'edit', tools: [...PERMISSION_TOOLS.edit], source: 'builtin' },
+  { name: 'general-purpose', description: 'Handle complex research, implementation, commands, tests, and multi-step tasks.',
+    prompt: 'Complete the assigned task using the available tools. Preserve other agents\' changes. Delegate independent work when useful, give each child clear scope and ownership, and wait for its result before finishing. Verify changes with appropriate checks and report the evidence.',
+    permissions: 'full', tools: [...PERMISSION_TOOLS.full], source: 'builtin' },
 ];
 
 function text(value: unknown, field: string): string {

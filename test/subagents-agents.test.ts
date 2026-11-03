@@ -9,7 +9,7 @@ const definition = (header: string) => `---\nname: custom\ndescription: Test age
 
 describe('agent permissions and discovery', () => {
   test('default agent is read-only and explicit tools determine the profile', () => {
-    expect(parseAgent(definition(''), 'agent.md').tools).toEqual(['read', 'grep', 'find', 'ls']);
+    expect(parseAgent(definition(''), 'agent.md').tools).toEqual(['read', 'grep', 'find', 'ls', 'subagent']);
     expect(parseAgent(definition('tools: [read, edit]'), 'agent.md').permissions).toBe('edit');
     expect(parseAgent(definition('tools: read, bash'), 'agent.md').permissions).toBe('full');
     expect(parseAgent(definition('permissions: full\ntools: []'), 'agent.md').tools).toEqual([]);
@@ -33,19 +33,19 @@ describe('agent permissions and discovery', () => {
     try {
       const user = join(dir, 'user'), project = join(dir, 'project');
       await mkdir(user); await mkdir(project);
-      await writeFile(join(user, 'worker.md'), definition('permissions: read-only').replace('name: custom', 'name: worker'));
+      await writeFile(join(user, 'general-purpose.md'), definition('permissions: read-only').replace('name: custom', 'name: general-purpose'));
       let found = await discoverAgents(user, project);
-      expect(found.agents.find(agent => agent.name === 'worker')?.permissions).toBe('read-only');
-      await writeFile(join(project, 'different-file.md'), definition('permissions: read-only\ntools: bash').replace('name: custom', 'name: worker'));
+      expect(found.agents.find(agent => agent.name === 'general-purpose')?.permissions).toBe('read-only');
+      await writeFile(join(project, 'different-file.md'), definition('permissions: read-only\ntools: bash').replace('name: custom', 'name: general-purpose'));
       found = await discoverAgents(user, project);
       expect(found.errors).toHaveLength(1);
-      expect(found.agents.some(agent => agent.name === 'worker')).toBe(false);
+      expect(found.agents.some(agent => agent.name === 'general-purpose')).toBe(false);
       // Declining project trust is implemented by omitting the project root.
-      expect((await discoverAgents(user)).agents.find(agent => agent.name === 'worker')?.permissions).toBe('read-only');
-      await writeFile(join(project, 'different-file.md'), definition('permissions: full').replace('name: custom', 'name: worker'));
-      expect((await discoverAgents(user, project)).agents.find(agent => agent.name === 'worker')?.permissions).toBe('full');
-      await writeFile(join(project, 'duplicate.md'), definition('').replace('name: custom', 'name: worker'));
-      expect((await discoverAgents(user, project)).agents.some(agent => agent.name === 'worker')).toBe(false);
+      expect((await discoverAgents(user)).agents.find(agent => agent.name === 'general-purpose')?.permissions).toBe('read-only');
+      await writeFile(join(project, 'different-file.md'), definition('permissions: full').replace('name: custom', 'name: general-purpose'));
+      expect((await discoverAgents(user, project)).agents.find(agent => agent.name === 'general-purpose')?.permissions).toBe('full');
+      await writeFile(join(project, 'duplicate.md'), definition('').replace('name: custom', 'name: general-purpose'));
+      expect((await discoverAgents(user, project)).agents.some(agent => agent.name === 'general-purpose')).toBe(false);
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });
@@ -58,7 +58,7 @@ test('subagent config has bounded defaults and rejects malformed files before sa
     await writeSubagentSettings(path, { maxConcurrent: 2, model: 'test/one' });
     const saved = await readFile(path, 'utf8');
     expect(await readSubagentSettings(path)).toMatchObject({ maxConcurrent: 2, model: 'test/one' });
-    for (const invalid of [{ maxConcurrent: 0 }, { maxConcurrent: 17 }, { maxTurns: 200 }, { timeoutSeconds: 0 }, { model: 'wrong' }, { thinking: 'turbo' }]) {
+    for (const invalid of [{ maxDepth: 0 }, { maxDepth: 9 }, { indicatorPosition: 'somewhere' }, { maxConcurrent: 0 }, { maxConcurrent: 17 }, { maxTurns: 200 }, { timeoutSeconds: 0 }, { model: 'wrong' }, { thinking: 'turbo' }]) {
       await expect(writeSubagentSettings(path, invalid)).rejects.toThrow();
       expect(await readFile(path, 'utf8')).toBe(saved);
     }
