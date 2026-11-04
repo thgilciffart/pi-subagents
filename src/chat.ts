@@ -181,7 +181,7 @@ export class SubagentChat implements Component {
     const meta = ` ${oneLine(`${run.model} · thinking ${run.thinking} · ${run.toolCalls} tool calls · task ${run.run}`)}`;
     const body = this.conversation(width);
     const bottom: string[] = [];
-    if (this.failure || this.loadFailure) bottom.push(this.theme.fg('error', truncateToWidth(` ${this.failure || this.loadFailure}`, width)));
+    if (this.failure || this.loadFailure || run.recoveryError) bottom.push(this.theme.fg('error', truncateToWidth(` ${this.failure || this.loadFailure || run.recoveryError}`, width)));
     else if (this.notice) bottom.push(this.theme.fg('success', truncateToWidth(` ${this.notice}`, width)));
     if (this.composing) {
       bottom.push(this.theme.fg('warning', truncateToWidth(this.sending ? ' Sending direction… · Esc back' : ` Steer task ${this.composeRun} · Enter send · Esc back`, width)));

@@ -64,6 +64,9 @@ describe('parent conversation forks and child compaction', () => {
       expect(entries.some(entry => entry.kind === 'pi.compaction')).toBe(true);
       expect(entries.filter(entry => entry.kind === 'pi-subagents.fork')).toHaveLength(65);
       expect(result.turns).toBe(2);
+      const active = await f.runtime.modelHistory(run.id);
+      expect(JSON.stringify(active)).toContain('Compacted parent decisions');
+      expect(JSON.stringify(active)).not.toContain('Parent message 0:');
       await f.runtime.dispose(); await f.open(); await f.runtime.resume();
       expect((await f.runtime.get(run.id)).output).toBe('Finished with compacted history');
       expect(f.faux.state.callCount).toBe(2);

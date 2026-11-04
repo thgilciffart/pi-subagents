@@ -108,7 +108,7 @@ export class NativeMcpBridge implements McpBridge {
     try { connection = await pending; }
     catch (error) { if (this.connections.get(key) === pending) this.connections.delete(key); throw error; }
     await connection.getClient();
-    if (this.ended) { await connection.close(); throw new Error('Child MCP connections are closed.'); }
+    if (this.ended || this.connections.get(key) !== pending) { await connection.close(); throw new Error('Child MCP connections are closed.'); }
     signal?.throwIfAborted();
     const matches = connection.tools.filter(candidate => native.createMcpToolName(tool.server, candidate.name) === tool.name ||
       native.createMcpToolName(tool.server, candidate.name, () => true) === tool.name);
@@ -144,5 +144,10 @@ export class NativeMcpBridge implements McpBridge {
     this.ended = true;
     await Promise.allSettled([...this.connections.values()].map(async connection => (await connection).close()));
     this.connections.clear();
+  }
+  async release(childId: string): Promise<void> {
+    const selected = [...this.connections].filter(([key]) => JSON.parse(key)[0] === childId);
+    for (const [key] of selected) this.connections.delete(key);
+    await Promise.allSettled(selected.map(async ([, connection]) => (await connection).close()));
   }
 }

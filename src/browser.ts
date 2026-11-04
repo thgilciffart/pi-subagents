@@ -29,6 +29,7 @@ export function taskTrees(runs: RunSnapshot[]): TaskTree[] {
 function flatten(tree: TaskTree): RunSnapshot[] { return [tree.run, ...tree.children.flatMap(flatten)]; }
 export function taskCategory(tree: TaskTree): Category {
   const runs = flatten(tree);
+  if (runs.some(run => run.recoveryError)) return 'Needs attention';
   if (runs.some(isRunning)) return 'Running';
   if (runs.some(run => run.status === 'failed')) return 'Needs attention';
   return tree.run.status === 'cancelled' ? 'Cancelled' : 'Completed';
@@ -74,6 +75,7 @@ export class SubagentBrowser implements Component {
       rows.push({ key: `run:${run.id}`, run, color, text: `${prefix}${connector}${open ? '▾' : '▸'} #${run.id} ${run.agent}${run.run > 1 ? ` · task ${run.run}` : ''} · ${run.status} · ${run.toolCalls} tool calls · ${elapsed(run, now)}${progress}` });
       const indent = prefix + (connector === '├─ ' ? '│  ' : connector ? '   ' : '');
       rows.push({ text: `${indent}  Task: ${run.task}`, color: 'text' });
+      if (run.recoveryError) rows.push({ text: `${indent}  Recovery paused: ${run.recoveryError}`, color: 'warning' });
       if (open) {
         rows.push({ text: `${indent}  ${run.model} · thinking ${run.thinking} · ${run.turns} requests · ${run.context ?? 'fresh'} context`, color: 'dim' });
         rows.push({ text: `${indent}  Conversation: ${tokens(run.tokens)} tokens · $${run.cost.toFixed(4)}${run.parentChildId ? ` · parent #${run.parentChildId}${run.parentRun ? ` task ${run.parentRun}` : ''}` : ''}`, color: 'dim' });

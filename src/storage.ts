@@ -24,9 +24,9 @@ export async function canonicalPath(path: string): Promise<string> {
 export async function openStore(agentDir: string, parentFile: string | undefined, parentId: string, cwd: string): Promise<Store> {
   if (!parentFile) return { storage: new MemoryStorage(), release: () => {} };
   const root = join(agentDir, 'subagents', 'sessions');
-  const [actualRoot, actualCwd] = await Promise.all([canonicalPath(root), realpath(cwd)]);
+  const actualRoot = await canonicalPath(root);
   let boundary: string | undefined;
-  for (let directory = actualCwd; ; directory = dirname(directory)) {
+  for (let directory = actualRoot; ; directory = dirname(directory)) {
     try { await stat(join(directory, '.git')); boundary = directory; break; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     if (directory === dirname(directory)) break;

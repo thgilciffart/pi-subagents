@@ -12,7 +12,7 @@ const factories = { read: createReadTool, grep: createGrepTool, find: createFind
   edit: createEditTool, write: createWriteTool, bash: createBashTool };
 
 export function childTools(cwd: string, authorize: (id: ConversationId, name: string) => Promise<SavedChild>, capabilities?: ParentCapabilities,
-  delegate?: (child: SavedChild, args: NestedInput, callId: string, signal?: AbortSignal) => Promise<ToolExecutionResult>): ToolRegistration[] {
+  delegate?: (child: SavedChild, args: NestedInput, callId: string, signal?: AbortSignal, taskKey?: string) => Promise<ToolExecutionResult>): ToolRegistration[] {
   async function execute(name: string, args: unknown, api: ToolExecutionApi, context: Context,
     run: (child: SavedChild) => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> {
     context.abortSignal?.throwIfAborted();
@@ -55,7 +55,7 @@ export function childTools(cwd: string, authorize: (id: ConversationId, name: st
     parameters: NestedParams, replay: 'safe',
     execute: (args, api, context) => execute('subagent', args, api, context, child => {
       if (!delegate) throw new Error('Nested delegation is unavailable.');
-      return delegate(child, args, api.callId, context.abortSignal);
+      return delegate(child, args, api.callId, context.abortSignal, `task:${api.taskId}`);
     }),
   }));
   tools.push(defineTool({ name: 'mcp', description: 'Call one of the exact parent-selected MCP tools described in your instructions. Uncertain calls are never automatically repeated.',

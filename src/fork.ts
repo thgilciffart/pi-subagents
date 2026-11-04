@@ -1,7 +1,7 @@
 import type { Message, ToolResultMessage } from '@earendil-works/pi-ai';
 
 /** Import conversation content without the parent's tool declarations or executable instructions. */
-export function forkMessages(history: readonly Message[]): Message[] {
+export function forkMessages(history: readonly Message[], creatingCallId?: string): Message[] {
   const messages: Message[] = [];
   for (let index = 0; index < history.length; index++) {
     const message = history[index];
@@ -18,8 +18,8 @@ export function forkMessages(history: readonly Message[]): Message[] {
     }
     for (const call of calls) messages.push(results.get(call.id) ?? {
       role: 'toolResult', toolCallId: call.id, toolName: call.name,
-      content: [{ type: 'text', text: 'This parent tool call had no saved result at the fork point. It was not executed in this child. Inspect its effects before requesting another operation.' }],
-      isError: true, timestamp: Date.now(),
+      content: [{ type: 'text', text: call.id === creatingCallId ? 'This parent delegation created you. Your assigned task follows. Do not repeat this delegation.' : 'This parent tool call had no saved result at the fork point. It was not executed in this child. Inspect its effects before requesting another operation.' }],
+      isError: call.id !== creatingCallId, timestamp: Date.now(),
     });
   }
   return JSON.parse(JSON.stringify(messages));

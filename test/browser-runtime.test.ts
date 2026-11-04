@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
@@ -33,5 +33,21 @@ test('browser details include completed tools during a running request and exclu
     expect(details.toolCalls).toBe(1);
     expect(JSON.stringify(await f.runtime.state())).toBe(before);
     expect(f.faux.state.callCount).toBe(2);
+  } finally { await f.cleanup(); }
+});
+
+test('browser refresh reuses unchanged transcript summaries', async () => {
+  const f = await fixture();
+  try {
+    f.respond(answer('Finished'));
+    const run = await f.spawn(); await f.runtime.wait(run.id, 3000);
+    const entries = vi.spyOn(f.runtime, 'entries');
+    await f.runtime.browserRuns(); await f.runtime.browserRuns(); await f.runtime.browserRuns();
+    expect(entries).toHaveBeenCalledTimes(1);
+    f.respond(answer('Follow-up'));
+    await f.runtime.send(run.id, 'Next task', 'next', 'next'); await f.runtime.wait(run.id, 3000);
+    entries.mockClear();
+    expect((await f.runtime.browserRuns())[0].run).toBe(2);
+    expect(entries).toHaveBeenCalledTimes(1);
   } finally { await f.cleanup(); }
 });

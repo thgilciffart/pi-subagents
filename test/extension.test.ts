@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createEventBus, ModelRuntime, ModelRegistry, SessionManager, initTheme } from '@earendil-works/pi-coding-agent';
@@ -55,14 +55,14 @@ async function harness(persistent = false) {
   install();
   const emit = async (name: string, event = {}) => handlers.get(name)?.({ type: name, ...event }, context);
   await emit('session_start');
-  const tool = async (params: any, persist = true) => {
-    const callId = `call-${++sequence}`;
+  const tool = async (params: any, persist = true, providedId?: string) => {
+    const callId = providedId ?? `call-${++sequence}`;
     const result = await tools.get('subagent').execute(callId, params, undefined, undefined, context);
     if (persist) manager.appendMessage({ role: 'toolResult', toolCallId: callId, toolName: 'subagent', content: result.content,
       isError: result.isError ?? false, timestamp: Date.now(), details: result.details });
     return result;
   };
-  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, shortcuts, customViews, customOptions, emit, tool, forwarded,
+  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, tools, shortcuts, customViews, customOptions, emit, tool, forwarded,
     get editor() { return editor; }, text: (value: string) => { editorText = value; }, get runtime() { return runtime; }, pi,
     persist: (value: boolean) => { persistMessages = value; },
     reload: async () => {
@@ -404,4 +404,117 @@ test('the parent tool accepts steering and forked context', async () => {
     expect(copied).toBe(true); expect(h.messages).toHaveLength(1);
     expect(h.messages[0].message.content).toContain('Steered result');
   } finally { release?.(); await h.cleanup(); }
+});
+
+test('failed startup can be repaired through config and invalid edits are retained', async () => {
+  const h = await harness();
+  try {
+    const path = join(h.agentDir, 'subagents', 'settings.json');
+    await mkdir(join(h.agentDir, 'subagents'), { recursive: true }); await writeFile(path, '{"maxTurns":0}');
+    await expect(h.reload()).rejects.toThrow('maxTurns');
+    const drafts: string[] = [];
+    h.context.ui.editor = async (_title: string, draft: string) => { drafts.push(draft); return drafts.length === 1 ? '{' : '{}'; };
+    await h.commands.get('agents').handler('config', h.context);
+    expect(drafts).toEqual(['{"maxTurns":0}', '{']);
+    expect(JSON.parse(await readFile(path, 'utf8')).maxTurns).toBe(20);
+    expect((await h.tool({ action: 'list' })).isError).not.toBe(true);
+  } finally { await h.cleanup(); }
+});
+
+test('fixing a settings file externally lets the next call retry startup', async () => {
+  const h = await harness();
+  try {
+    await mkdir(join(h.agentDir, 'subagents'), { recursive: true });
+    const path = join(h.agentDir, 'subagents', 'settings.json'); await writeFile(path, '{');
+    await expect(h.reload()).rejects.toThrow(); await writeFile(path, '{}');
+    expect((await h.tool({ action: 'list' })).isError).not.toBe(true);
+  } finally { await h.cleanup(); }
+});
+
+test('expanded tool and message results strip terminal controls while preserving text layout', async () => {
+  const h = await harness();
+  try {
+    const hostile = 'Before\n\tAfter\x1b]52;c;ZXZpbA==\x07\x1b]0;evil\x07\x1b[2J';
+    const theme = { fg: (_name: string, text: string) => text };
+    const tool = h.tools.get('subagent').renderResult({ content: [{ type: 'text', text: hostile }], details: { summary: hostile } }, { expanded: true }, theme);
+    const message = h.renderers.get(RESULT_MESSAGE)({ content: hostile }, { expanded: true }, theme);
+    for (const component of [tool, message]) {
+      const output = component.render(100).join('\n');
+      expect(output).not.toContain('\x1b'); expect(output).not.toContain('\x07');
+      expect(output).toMatch(/Before\s*\n/); expect(output).toContain('After');
+    }
+  } finally { await h.cleanup(); }
+});
+
+test('synchronous admission failures carry a receipt and are not delivered again after reload', async () => {
+  const h = await harness(true);
+  let release!: () => void;
+  try {
+    let stopped!: () => void; const stopping = new Promise<void>(resolve => { stopped = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    registerChildHook(h.pi, { name: 'deny', version: '1', permissions: 'read-only', replay: 'safe', project: false,
+      onStart: () => { throw new Error('Start denied'); }, onStop: async () => { stopped(); await gate; } });
+    const starting = h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect', hooks: ['deny'] });
+    await stopping; await flush(); expect(h.messages).toHaveLength(0);
+    release(); const result = await starting;
+    expect(result.isError).toBe(true); expect(result.details.receipts).toHaveLength(1);
+    await flush(); expect(h.messages).toHaveLength(0);
+    await h.reload(); await flush(); expect(h.messages).toHaveLength(0);
+    expect(await h.runtime.pending()).toEqual([]);
+  } finally { release?.(); await h.cleanup(); }
+});
+
+test('RPC listings use notifications even with hasUI true and commands accept displayed IDs', async () => {
+  const h = await harness();
+  try {
+    h.faux.setResponses([answer('Saved result')]);
+    const result = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect' });
+    const id = result.details.runs[0].id; await h.runtime.wait(id, 3000);
+    h.context.mode = 'rpc';
+    await h.commands.get('agents').handler('', h.context);
+    expect(h.notifications.at(-1)).toContain(`#${id}`); expect(h.customViews).toHaveLength(0);
+    await h.commands.get('agents').handler(`#${id}`, h.context);
+    expect(h.notifications.at(-1)).toContain('Saved result');
+  } finally { await h.cleanup(); }
+});
+
+test('empty tool-call IDs require explicit request keys and repeated IDs are scoped to parent messages', async () => {
+  const h = await harness(true);
+  try {
+    const params = { action: 'spawn', agent: 'Explore', task: 'Inspect' };
+    expect((await h.tool(params, false, '')).isError).toBe(true);
+    h.faux.setResponses([answer('One'), answer('Two')]);
+    const { fauxToolCall } = await import('@earendil-works/pi-ai/providers/faux');
+    const add = () => h.context.sessionManager.appendMessage(answer(fauxToolCall('subagent', params, { id: 'call_0' }), { stopReason: 'toolUse' }));
+    add(); const first = await h.tool(params, true, 'call_0'); await h.runtime.wait(first.details.runs[0].id, 3000);
+    expect((await h.tool(params, true, 'call_0')).details.runs[0].id).toBe(first.details.runs[0].id);
+    add(); const second = await h.tool(params, true, 'call_0');
+    expect(second.details.runs[0].id).not.toBe(first.details.runs[0].id);
+    await h.runtime.wait(second.details.runs[0].id, 3000);
+  } finally { await h.cleanup(); }
+});
+
+test('results completed during compaction are delivered once when the parent becomes idle', async () => {
+  const h = await harness(true); let idle = false;
+  try {
+    h.context.isIdle = () => idle;
+    h.faux.setResponses([answer('Result during compaction')]);
+    const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect' });
+    await h.runtime.wait(spawned.details.runs[0].id, 3000); await flush(); expect(h.messages).toHaveLength(0);
+    idle = true;
+    await expect.poll(() => h.messages.length).toBe(1);
+    await flush(); expect(h.messages).toHaveLength(1);
+  } finally { await h.cleanup(); }
+});
+
+test('parent result metadata clips child output but the saved child keeps the full result', async () => {
+  const h = await harness(true);
+  try {
+    const output = 'evidence '.repeat(400);
+    h.faux.setResponses([answer(output)]);
+    const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect' });
+    const id = spawned.details.runs[0].id; await h.runtime.wait(id, 3000); await flush();
+    expect(h.messages[0].message.details.runs[0].output.length).toBeLessThan(2200);
+    expect((await h.runtime.get(id)).output).toBe(output);
+  } finally { await h.cleanup(); }
 });

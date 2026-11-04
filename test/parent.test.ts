@@ -53,7 +53,7 @@ test.each(['fresh', 'fork'] as const)('a real Pi parent keeps working and receiv
     if (contextMode === 'fresh') expect(childContext).toContain('Inherited skills are available on demand');
     expect(childContext).toContain('Selected child hooks: policy');
     expect(childContext.includes('Delegate to Explore and continue independent work.')).toBe(contextMode === 'fork');
-    if (contextMode === 'fork') expect(childContext).toContain('had no saved result at the fork point');
+    if (contextMode === 'fork') expect(childContext).toContain('This parent delegation created you');
     expect(JSON.stringify(contexts[2])).toContain('Asynchronous child evidence');
     expect(errors).toEqual([]);
     const receipts = parent.sessionManager.getEntries().filter(entry => entry.type === 'custom_message' && entry.customType === 'pi-subagents-results');

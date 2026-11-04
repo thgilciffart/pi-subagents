@@ -13,7 +13,7 @@ for await (const line of input) {
   ] };
   else if (message.method === 'tools/call') {
     if (message.params.name === 'append') await appendFile(effect, 'x');
-    result = { content: [{ type: 'text', text: `Local MCP ${message.params.name} in ${process.cwd()}` }] };
+    result = { content: [{ type: 'text', text: `Local MCP ${message.params.name} in ${process.cwd()} · pid ${process.pid}` }] };
   } else if (message.method === 'ping') result = {};
   else { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Unknown method' } }) + '\n'); continue; }
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\n');

@@ -46,6 +46,11 @@ describe('agent permissions and discovery', () => {
       expect((await discoverAgents(user, project)).agents.find(agent => agent.name === 'general-purpose')?.permissions).toBe('full');
       await writeFile(join(project, 'duplicate.md'), definition('').replace('name: custom', 'name: general-purpose'));
       expect((await discoverAgents(user, project)).agents.some(agent => agent.name === 'general-purpose')).toBe(false);
+      await rm(join(project, 'duplicate.md'));
+      await writeFile(join(project, 'different-file.md'), '---\nname: general-purpose\npermissions: read-only\ntools: [read\n---\nWork');
+      expect((await discoverAgents(user, project)).agents.some(agent => agent.name === 'general-purpose')).toBe(false);
+      await writeFile(join(project, 'different-file.md'), '---\nname: [unrecoverable\n---\nWork');
+      expect((await discoverAgents(user, project)).agents).toEqual([]);
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });

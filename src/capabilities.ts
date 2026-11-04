@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import type { JsonValue } from '@earendil-works/chord';
 import type { Context } from '@earendil-works/chord/context';
 import type { JsonObject, ToolExecutionApi, ToolExecutionResult } from '@earendil-works/pi-durable';
@@ -67,6 +67,7 @@ export interface McpBridge {
   validate(tools: McpSnapshot[]): Promise<void>;
   call(tool: McpSnapshot, childId: string, cwd: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolExecutionResult>;
   close(): Promise<void>;
+  release?(childId: string): Promise<void>;
 }
 
 export class ParentCapabilities {
@@ -156,6 +157,7 @@ export class ParentCapabilities {
     const skill = saved.skills.find(item => item.name === name);
     if (!skill) throw new Error(`Skill is outside the saved selection: ${name}.`);
     if (isAbsolute(path)) throw new Error('Skill paths must be relative.');
+    if (basename(skill.path) !== 'SKILL.md' && path !== 'SKILL.md' && path !== basename(skill.path)) throw new Error('Flat-file skills expose only their selected entry file.');
     const target = await realpath(path === 'SKILL.md' ? skill.path : resolve(skill.baseDir, path));
     const rel = relative(skill.baseDir, target);
     if (rel === '..' || rel.startsWith('../') || isAbsolute(rel)) throw new Error('Skill paths must remain inside the selected skill directory.');
@@ -163,6 +165,7 @@ export class ParentCapabilities {
   }
   async runHooks(saved: Capabilities, stage: 'before' | 'after', name: string, args: unknown, result: ToolExecutionResult | undefined,
     child: ChildHookContext, api: ToolExecutionApi, context: Context): Promise<ToolExecutionResult | undefined> {
+    if (!saved.hooks.length) return result;
     const hooks = this.hooks();
     for (const spec of saved.hooks) {
       const hook = hooks.get(spec.name);

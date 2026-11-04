@@ -109,8 +109,10 @@ test('starting another child cannot bypass a recovered sibling resume hook', asy
     const old = await f.spawn({ task: 'Old recovered task', capabilities: await select() }); await modelBegun; await f.runtime.dispose(); await f.open();
     const response = (context: unknown) => { if (JSON.stringify(context).includes('Old recovered task')) expect(resumed).toBe(true); return answer('Done'); };
     f.respond(response, response);
+    const recovering = f.runtime.resume();
+    await begun;
     const next = await f.spawn({ task: 'New child', capabilities: await select() }, 'new-child');
-    await begun; release(); await f.runtime.resume();
+    release(); await recovering;
     expect((await f.runtime.wait(old.id, 3000)).status).toBe('completed');
     expect((await f.runtime.wait(next.id, 3000)).status).toBe('completed');
   } finally { release(); await f.cleanup(); }

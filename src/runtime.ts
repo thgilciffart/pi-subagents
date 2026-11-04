@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT as C, withAbortSignal } from '@earendil-works/chord/
 import {
   AssistantEntry, configure, createRegistry, defineDoc, defineExtension, defineTask, Harness,
   hook, InboxDoc, LiveDoc, ProviderDoc, ToolTask, UsageDoc,
-  type Conversation, type ConversationId, type Cursor, type EntryRecord, type SubmissionId, type TaskId,
+  type Conversation, type ConversationId, type Cursor, type EntryRecord, type SubmissionId, type TaskId, type TaskState, type TaskRecord, type Tx,
 } from '@earendil-works/pi-durable';
 import type { Models as PiModels, Model, Api, Context, ModelsSimpleStreamOptions, Message } from '@earendil-works/pi-ai';
 import type { ExtensionContext, ModelRuntime } from '@earendil-works/pi-coding-agent';
@@ -26,6 +26,7 @@ export type RunSnapshot = {
   id: string; agent: string; task: string; run: number; status: RunStatus; model: string; thinking: Thinking;
   tools: string[]; startedAt: number; finishedAt?: number; turns: number; toolCalls: number; activity?: string;
   output: string; error?: string; sessionFile?: string; tokens: number; cost: number;
+  recoveryError?: string;
   trust?: Trust;
   parentChildId?: string; parentRun?: number; depth?: number;
   lifecycleErrors?: string[];
@@ -44,6 +45,7 @@ export type SavedChild = {
   trust?: Trust; policy?: ToolPolicy;
   delegation?: { ownerId: string; ownerRun: number; depth: number }; sharedInstructions?: string;
   lifecycle?: Record<string, LifecycleRecord>;
+  recovery?: { message: string; tasks: { id: TaskId; state: JsonValue }[] };
   routing?: { state?: JsonValue; decisions: Record<string, { provider: string; id: string; thinking: Thinking }> };
 };
 type State = { notificationsPaused: boolean; parentId: string; children: Record<string, SavedChild>; requests: Record<string, { id: string; run: number; input: string }> };
@@ -56,7 +58,7 @@ const Anchor = defineTask<null, { phase: 'done' }, null>({ name: 'pi-subagents.o
 });
 export type SpawnOptions = {
   definition: AgentDefinition; trust?: Trust; task: string; tools: string[]; settings: SubagentSettings;
-  model: string; thinking: Thinking; instructions: string; capabilities?: Capabilities; projectTrusted: boolean; isolation?: Isolation; context?: ContextMode; history?: Message[]; forkParentLeaf?: string;
+  model: string; thinking: Thinking; instructions: string; capabilities?: Capabilities; projectTrusted: boolean; isolation?: Isolation; context?: ContextMode; history?: Message[]; forkParentLeaf?: string; forkCallId?: string;
   delegation?: SavedChild['delegation']; sharedInstructions?: string;
 };
 
@@ -71,6 +73,13 @@ export function parentRuntime(ctx: Pick<ExtensionContext, 'modelRegistry'>): Mod
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const latest = (child: SavedChild) => child.runs[child.runs.length - 1];
+// Pi Durable 1.4 exposes no per-conversation pause. Preserve task records through its
+// transaction implementation, alongside the saved recovery intent in the same commit.
+function replaceTask(tx: Tx, record: TaskRecord<JsonValue, JsonValue, JsonValue>): void {
+  const writer = tx as Tx & { setTask?: (record: TaskRecord<JsonValue, JsonValue, JsonValue>) => void };
+  if (typeof writer.setTask !== 'function') throw new Error('Pi Durable task recovery bridge is unavailable.');
+  writer.setTask(record);
+}
 
 export class SubagentRuntime {
   private constructor(readonly harness: Harness, private root: Conversation, private store: Store,
@@ -86,12 +95,13 @@ export class SubagentRuntime {
   private unsubscribe?: () => void;
   private workspaces = new Map<string, Promise<void>>();
   private deadlines = new Map<string, ReturnType<typeof setTimeout>>();
+  private browserCache = new Map<string, { key: string; run: RunSnapshot }>();
 
   static async open(store: Store, options: SubagentRuntime['options']): Promise<SubagentRuntime> {
     const registry = createRegistry();
     let runtime: SubagentRuntime | undefined;
     const guards = defineExtension({ name: 'pi-subagents', tools: childTools(options.cwd, (id, name) => runtime!.authorizeTool(id, name), options.capabilities,
-      (child, args, callId, signal) => runtime!.delegate(String(child.id), args, callId, signal)), tasks: [Anchor], hooks: [
+      (child, args, callId, signal, taskKey) => runtime!.delegate(String(child.id), args, callId, signal, taskKey)), tasks: [Anchor], hooks: [
       hook(ToolTask, { beforeTool: async (call, api) => {
         try {
           const child = await runtime!.saved(api.conversationId);
@@ -104,7 +114,7 @@ export class SubagentRuntime {
     ] });
     registry.install(guards);
     try {
-      const harness = await Harness.open(store.storage, { models: guardedModels(options.models, (model, context, streamOptions) => runtime!.admitModel(model, context, streamOptions)), registry,
+      const harness = await Harness.open(store.storage, { models: guardedModels(options.models, (model, context, streamOptions) => runtime!.admitModel(model, context, streamOptions), (model, handle) => runtime!.admitDeferred(model, handle)), registry,
         settings: { extensions: [guards], retry: { enabled: false, maxRetries: 0 }, afterFailedRun: 'withdraw', compaction: { enabled: true }, toolExecution: 'sequential',
           stream: { timeoutMs: 120000 }, restartLimit: 5 }, onReport: options.error }, C);
       const root = await harness.root(C);
@@ -118,6 +128,8 @@ export class SubagentRuntime {
         }
       }, C);
       for (const child of Object.values((await runtime.state()).children)) if (isRunning(latest(child)) && !child.closed) runtime.recovering.set(String(child.id), latest(child).run);
+      // Park before anything can enable Durable scheduling, including aborting a terminal sibling.
+      for (const child of Object.values((await runtime.state()).children)) if (isRunning(latest(child)) && !child.closed) await runtime.park(child, child.recovery?.message ?? 'Recovery checks pending.');
       runtime.unsubscribe = harness.subscribeCommits(() => runtime!.scheduleRefresh());
       return runtime;
     } catch (error) { await store.storage.close(C); store.release(); throw error; }
@@ -238,8 +250,13 @@ export class SubagentRuntime {
       const job = this.lifecycleJobs.get(`${child.id}:${run.run}:${event}`); return job ? [job] : [];
     }));
     if (this.recovering.get(String(child.id)) === run.run) this.recovering.delete(String(child.id));
-    await this.lifecycle(child, 'stop', run);
-    if (child.closed && latest(child).run === run.run) await this.lifecycle(child, 'close', run);
+    try {
+      await this.lifecycle(child, 'stop', run);
+      if (child.closed && latest(child).run === run.run) await this.lifecycle(child, 'close', run);
+    } finally {
+      const current = await this.saved(child.id);
+      if (latest(current).run === run.run && !isRunning(latest(current))) await this.options.capabilities?.mcp.release?.(String(child.id));
+    }
   }
 
   private async admitModel(model: Model<Api>, context: Context, streamOptions: ModelsSimpleStreamOptions | undefined): Promise<{ model: Model<Api>; options: ModelsSimpleStreamOptions | undefined }> {
@@ -292,7 +309,22 @@ export class SubagentRuntime {
     await this.options.capabilities?.validate(child.capabilities ?? emptyCapabilities());
     return child;
   }
-  private check(child: SavedChild): void {
+  private async admitDeferred(model: Model<Api>, handle: import('@earendil-works/pi-ai').DeferredHandle): Promise<void> {
+    if (this.ended) throw new Error('The child runtime is closed.');
+    const candidates = (await this.harness.inspect(C)).tasks.filter(task => {
+      const checkpoint = task.record.state.status === 'terminal' || task.record.state.status === 'completing' ? undefined : task.record.state.checkpoint;
+      if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return false;
+      const ref = checkpoint.model as { provider?: string; modelId?: string } | undefined;
+      const saved = checkpoint.handle && typeof checkpoint.handle === 'object' && !Array.isArray(checkpoint.handle) ? checkpoint.handle : undefined;
+      return task.record.kind === 'pi.generation' && checkpoint.phase === 'poll' && ref?.provider === model.provider && ref?.modelId === model.id &&
+        saved?.provider === handle.provider && saved?.modelId === handle.modelId && saved?.api === handle.api && saved?.id === handle.id;
+    });
+    if (candidates.length !== 1) throw new Error('No unique child owns this deferred model response.');
+    const child = await this.saved(candidates[0].record.conversationId);
+    this.check(child); await this.ensureLifecycle(child); await this.validateWorkspace(child);
+    await this.options.capabilities?.validate(child.capabilities ?? emptyCapabilities());
+  }
+  private check(child: SavedChild, environment = true): void {
     if (child.closed || !isRunning(latest(child))) throw new Error('This task is no longer active.');
     if (child.parentId !== this.options.parentId || (child.parentCwd ?? child.cwd) !== this.options.cwd) throw new Error('Child ownership or working directory changed.');
     checkPolicy(child);
@@ -304,18 +336,24 @@ export class SubagentRuntime {
     const allowed = PERMISSION_TOOLS[child.definition.permissions] as readonly string[];
     if (!allowed || child.tools.some(tool => !extra.includes(tool) && (!allowed.includes(tool) || !(child.definition.toolCeiling ?? child.definition.tools).includes(tool)))) throw new Error('Invalid saved tool permissions.');
     if (Date.now() >= latest(child).startedAt + child.settings.timeoutSeconds * 1000) throw new Error('The saved task deadline has passed.');
+    if (environment) {
+      if (child.recovery) throw new Error(child.recovery.message);
+      this.checkEnvironment(child);
+    }
+  }
+  private checkEnvironment(child: SavedChild): void {
     this.options.allow(child);
     const split = child.model.indexOf('/');
     if (!this.options.models.getModel(child.model.slice(0, split), child.model.slice(split + 1))) throw new Error(`Saved model unavailable: ${child.model}`);
   }
-  private checkDelegation(child: SavedChild, state: Readonly<State>): void {
+  private checkDelegation(child: SavedChild, state: Readonly<State>, environment = true): void {
     const seen = new Set<string>([String(child.id)]);
     for (let current = child; current.delegation;) {
       const relation = current.delegation;
       const owner = state.children[relation.ownerId];
       if (!owner || seen.has(relation.ownerId)) throw new Error('Invalid nested child ownership.');
       seen.add(relation.ownerId);
-      this.check(clone(owner));
+      this.check(clone(owner), environment);
       if (latest(owner).run !== relation.ownerRun || relation.depth !== (owner.delegation?.depth ?? 1) + 1 || relation.depth > validateSubagentSettings(owner.settings).maxDepth) throw new Error('The delegating task is no longer active or its depth limit changed.');
       if (current.cwd !== owner.cwd || JSON.stringify(current.worktree) !== JSON.stringify(owner.worktree)) throw new Error('Nested children must keep their owner working directory.');
       if (!owner.tools.includes('subagent') || current.tools.some(tool => !owner.tools.includes(tool))) throw new Error('Nested tools exceed the delegating agent allowlist.');
@@ -328,10 +366,10 @@ export class SubagentRuntime {
       current = owner;
     }
   }
-  async delegate(callerId: string, params: NestedParams, callId: string, signal?: AbortSignal) {
+  async delegate(callerId: string, params: NestedParams, callId: string, signal?: AbortSignal, taskKey?: string) {
     const caller = await this.authorizeTool(Number(callerId) as ConversationId, 'subagent');
     const definitions = await (this.options.definitions?.() ?? Promise.resolve(BUILTIN_AGENTS));
-    return nestedOperation(this, caller, definitions, params, callId, signal);
+    return nestedOperation(this, caller, definitions, params, callId, signal, taskKey);
   }
   configuredModel(name: string): Model<Api> | undefined {
     const split = name.indexOf('/');
@@ -343,6 +381,7 @@ export class SubagentRuntime {
     for (const child of Object.values(state.children)) {
       if (child.delegation?.ownerId !== id || child.delegation.ownerRun !== run) continue;
       if (isRunning(latest(child))) Object.assign(latest(child), { status: 'cancelled', error: 'The delegating task ended.', finishedAt: Date.now() });
+      delete child.recovery; delete latest(child).recoveryError;
       this.cancelDescendants(state, String(child.id), latest(child).run, seen);
     }
   }
@@ -374,10 +413,21 @@ export class SubagentRuntime {
     const state = await this.state();
     return Promise.all((await this.list()).map(async run => {
       run.parentRun = state.children[run.id]?.delegation?.ownerRun;
-      return (await this.readChat(run)).run;
+      const conversation = (await this.harness.conversation(Number(run.id) as ConversationId, C))!;
+      const tail = (await conversation.entries({ order: 'descending' }, 1, undefined, C)).items[0];
+      const key = JSON.stringify([run, tail?.id]);
+      const cached = this.browserCache.get(run.id);
+      if (cached?.key === key) return clone(cached.run);
+      const details = (await this.readChat(run)).run;
+      this.browserCache.set(run.id, { key, run: clone(details) });
+      return details;
     }));
   }
   async chatSnapshot(id: string): Promise<ChildChatSnapshot> { return this.readChat(await this.get(id)); }
+  async modelHistory(id: string): Promise<Message[]> {
+    const child = await this.saved(id);
+    return [...(await (await this.harness.conversation(child.id, C))!.context(C)).messages];
+  }
   private async readChat(run: RunSnapshot): Promise<ChildChatSnapshot> {
     const [entries, usage] = await Promise.all([this.entries(run.id), this.harness.snapshot(UsageDoc, Number(run.id) as ConversationId, C)]);
     const messages = entries.filter(entry => entry.kind !== 'pi-subagents.fork').flatMap(entry => entry.model ?? []);
@@ -414,8 +464,8 @@ export class SubagentRuntime {
     const worktree = delegator ? delegator.worktree : isolation === 'worktree' ? await planWorktree(this.options.cwd,
       this.options.worktreeRoot) : undefined;
     const contextMode = options.context ?? options.definition.context ?? settings.context;
-    const history = contextMode === 'fork' ? forkMessages(options.history ?? []) : [];
-    const { history: _history, ...spec } = options;
+    const history = contextMode === 'fork' ? forkMessages(options.history ?? [], options.forkCallId) : [];
+    const { history: _history, forkCallId: _forkCallId, ...spec } = options;
     const id = await this.root.commit(async tx => {
       const state = await tx.doc(Children);
       if (state.requests[`r:${requestId}`]) {
@@ -539,7 +589,7 @@ export class SubagentRuntime {
         await ensureWorktree(child.worktree!);
         await this.harness.commit(async tx => {
           const current = (await tx.doc(Children)).children[key];
-          this.check(clone(current));
+          this.check(clone(current), false);
           current.worktree!.ready = true;
         }, C);
       })();
@@ -586,7 +636,7 @@ export class SubagentRuntime {
     await this.recoverAdmissions();
     await this.refresh();
     if (id) await this.saved(id);
-    const children = Object.values((await this.state()).children);
+    const children = Object.values((await this.state()).children).filter(child => !id || String(child.id) === id);
     for (const child of children) {
       if (!isRunning(latest(child)) || child.closed) {
         // An intent to cancel or close may have committed just before a crash.
@@ -596,22 +646,39 @@ export class SubagentRuntime {
         continue;
       }
       try {
-        this.check(child); await this.options.capabilities?.validate(child.capabilities ?? emptyCapabilities()); await this.prepareWorkspace(child);
-        await this.ensureLifecycle(child);
+        this.check(child, false);
+        if (child.delegation) this.checkDelegation(child, await this.state(), false);
       }
       catch (error) {
         if (this.ended) throw error;
         await this.stop(String(child.id), false, error instanceof Error ? error.message : String(error));
         continue;
       }
-      if (!latest(child).submissionId) await this.admit(await this.saved(child.id));
-      else this.armDeadline(child);
+      try {
+        this.checkEnvironment(child);
+        if (child.delegation) this.checkDelegation(child, await this.state());
+        await this.options.capabilities?.validate(child.capabilities ?? emptyCapabilities());
+      } catch (error) {
+        await this.park(child, error instanceof Error ? error.message : String(error));
+        this.armDeadline(child); continue;
+      }
+      try {
+        await this.prepareWorkspace(child);
+        await this.unpark(child);
+        const current = await this.saved(child.id);
+        await this.ensureLifecycle(current);
+        if (!latest(current).submissionId) await this.admit(await this.saved(child.id));
+        else this.armDeadline(current);
+      } catch (error) {
+        if (this.ended) throw error;
+        await this.stop(String(child.id), false, error instanceof Error ? error.message : String(error));
+      }
     }
     if (retryBlocked) {
       for (const task of (await this.harness.inspect(C)).tasks) {
         const child = (await this.state()).children[String(task.record.conversationId)];
         if (task.state.kind === 'blocked' && task.state.reason === 'restart_limit' && child &&
-          !child.closed && isRunning(latest(child)) && (!id || String(child.id) === id)) {
+          !child.closed && !child.recovery && isRunning(latest(child)) && (!id || String(child.id) === id)) {
           this.check(child);
           await this.harness.retryTask(task.record.id, C);
         }
@@ -620,6 +687,42 @@ export class SubagentRuntime {
     this.harness.resume();
     await this.refresh();
     return id ? [await this.get(id)] : this.list();
+  }
+
+  private async park(child: SavedChild, message: string): Promise<void> {
+    const tasks = (await this.harness.inspect(C)).tasks.filter(task => task.record.conversationId === child.id);
+    if (tasks.some(task => task.state.kind === 'running')) throw new Error('This child still has live work. Reload before retrying recovery checks.');
+    await this.harness.commit(async tx => {
+      const current = (await tx.doc(Children)).children[child.id];
+      if (!isRunning(latest(current)) || current.closed) return;
+      if (!current.recovery) {
+        const saved: NonNullable<SavedChild['recovery']>['tasks'] = [];
+        const records = await Promise.all(tasks.map(task => tx.task(task.record.id)));
+        for (const record of records) {
+          if (!record || record.state.status === 'terminal' || record.state.status === 'completing') continue;
+          const state = record.state.status === 'running' ? { ...record.state, status: 'pending' as const } : record.state;
+          saved.push({ id: record.id, state: clone(state) as unknown as JsonValue });
+          // Keep the checkpoint unchanged. No phase, model request, or unsafe tool runs while parked.
+          replaceTask(tx, { ...record, state: { status: 'sleeping', checkpoint: record.state.checkpoint, until: Number.MAX_SAFE_INTEGER } });
+        }
+        current.recovery = { message, tasks: saved };
+      } else current.recovery.message = message;
+      latest(current).recoveryError = message;
+    }, C);
+  }
+  private async unpark(child: SavedChild): Promise<void> {
+    if (!child.recovery) return;
+    await this.harness.commit(async tx => {
+      const current = (await tx.doc(Children)).children[child.id];
+      if (!isRunning(latest(current)) || current.closed || !current.recovery) return;
+      this.check(clone(current), false); this.checkEnvironment(clone(current));
+      const records = await Promise.all(current.recovery.tasks.map(saved => tx.task(saved.id)));
+      for (const [index, saved] of current.recovery.tasks.entries()) {
+        const record = records[index];
+        if (record?.state.status === 'sleeping') replaceTask(tx, { ...record, state: clone(saved.state) as unknown as TaskState<JsonValue, JsonValue> } as typeof record);
+      }
+      delete current.recovery; delete latest(current).recoveryError;
+    }, C);
   }
 
   private async recoverAdmissions(): Promise<void> {
@@ -679,7 +782,8 @@ export class SubagentRuntime {
         current.status = status.status === 'done' ? 'completed' : status.reason === 'aborted' ? 'cancelled' : 'failed';
         current.output = text; current.finishedAt = Date.now();
         if (status.status === 'unanswered') current.error = `${status.reason}${status.detail ? ': ' + JSON.stringify(status.detail) : ''}`;
-        current.toolCalls = entries.reduce((sum, entry) => sum + (entry.model?.filter(message => message.role === 'toolResult').length ?? 0), 0);
+        current.toolCalls = entries.filter(entry => entry.kind !== 'pi-subagents.fork').reduce((sum, entry) => sum + (entry.model?.filter(message => message.role === 'toolResult').length ?? 0), 0);
+        delete current.recoveryError; delete state.children[child.id].recovery;
         current.tokens = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.totalTokens, 0);
         current.cost = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.cost.total, 0);
         this.cancelDescendants(state, String(child.id), current.run);
@@ -704,6 +808,7 @@ export class SubagentRuntime {
       const child = state.children[id];
       if (!child) throw new Error(`Unknown child: ${id}.`);
       if (isRunning(latest(child))) Object.assign(latest(child), { status: cancelled ? 'cancelled' : 'failed', error: reason, finishedAt: Date.now() });
+      delete child.recovery; delete latest(child).recoveryError;
       this.cancelDescendants(state, id, latest(child).run);
     }, C);
     await this.abortDescendants(id, (await this.get(id)).run);
@@ -723,6 +828,7 @@ export class SubagentRuntime {
       if (!child) throw new Error(`Unknown child: ${id}.`);
       child.closed = true;
       if (isRunning(latest(child))) Object.assign(latest(child), { status: 'cancelled', error: 'Closed by the parent.', finishedAt: Date.now() });
+      delete child.recovery; delete latest(child).recoveryError;
       this.cancelDescendants(state, id, latest(child).run);
     }, C);
     await this.abortDescendants(id, (await this.get(id)).run);

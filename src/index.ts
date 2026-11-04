@@ -2,16 +2,17 @@ import { resolveSelection, resolveTools, resolveTrust } from './policy.ts';
 import { capabilityPrompt, capabilityTools, ParentCapabilities } from './capabilities.ts';
 import { NativeMcpBridge } from './mcp.ts';
 import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { convertToLlm, getAgentDir, loadProjectContextFiles, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { getCapabilities, Text } from '@earendil-works/pi-tui';
 import { Type, type Static } from 'typebox';
 import { discoverAgents, THINKING_LEVELS, type Thinking } from './agents.ts';
-import { readSubagentSettings, writeSubagentSettings } from './config.ts';
+import { DEFAULT_SUBAGENT_SETTINGS, readSubagentSettings, writeSubagentSettings } from './config.ts';
 import { parentRuntime, SubagentRuntime, isRunning, type RunSnapshot, type SavedChild } from './runtime.ts';
 import { openStore } from './storage.ts';
 import { parentReceipts, RESULT_MESSAGE } from './receipts.ts';
-import { compactText, editorPickerShortcut, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
+import { cleanText, compactText, editorPickerShortcut, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
 import { SubagentBrowser } from './browser.ts';
 import { SubagentChat } from './chat.ts';
 
@@ -39,6 +40,8 @@ const Params = Type.Object({
 });
 type Details = { summary: string; runs?: RunSnapshot[]; receipts?: string[] };
 const clip = (text: string, limit = 12000) => text.length <= limit ? text : text.slice(0, limit) + '\n[Truncated. Use subagent transcript or /agents <id>.]';
+const storedRuns = (runs: RunSnapshot[]) => runs.map(run => ({ ...run, output: clip(run.output, 2000), task: clip(run.task, 2000),
+  ...(run.error ? { error: clip(run.error, 2000) } : {}), ...(run.steering ? { steering: run.steering.map(item => ({ ...item, task: clip(item.task, 2000) })) } : {}) }));
 const fingerprint = (params: Static<typeof Params>) => JSON.stringify([params.action, params.id, params.agent, params.task, params.model, params.thinking, params.tools, params.isolation, params.context, params.skills, params.mcpTools, params.mcpServers, params.hooks, ...(params.disabledSkills === undefined ? [] : [{ disabledSkills: params.disabledSkills }]), ...(params.disabledMcpTools === undefined ? [] : [{ disabledMcpTools: params.disabledMcpTools }]), ...(params.disabledHooks === undefined ? [] : [{ disabledHooks: params.disabledHooks }]), ...(params.trust === undefined ? [] : [{ trust: params.trust }]), ...(params.disabledTools === undefined ? [] : [{ disabledTools: params.disabledTools }])]);
 
 export default function subagents(pi: ExtensionAPI, options: {
@@ -64,10 +67,11 @@ export default function subagents(pi: ExtensionAPI, options: {
   let stopped = false;
   const queued = new Set<string>();
   const reading = new Set<string>();
+  const mutations = new Set<symbol>();
   let generation = 0;
   const pickerShortcut = editorPickerShortcut(context => command('', context), report);
 
-  function report(error: unknown): void { ctx?.ui.notify(error instanceof Error ? error.message : String(error), 'error'); }
+  function report(error: unknown): void { ctx?.ui.notify(cleanText(error instanceof Error ? error.message : String(error)), 'error'); }
   function changed(): void {
     if (!runtime || !ctx) return;
     const owner = runtime;
@@ -79,20 +83,23 @@ export default function subagents(pi: ExtensionAPI, options: {
     const owner = runtime, context = ctx, epoch = generation;
     if (!owner || !context || stopped) return;
     await owner.acknowledge(parentReceipts(context));
-    if (!context.isIdle()) return;
     const pending = (await owner.pending()).filter(run => !queued.has(run.receipt) && !reading.has(run.receipt));
     if (owner !== runtime || epoch !== generation || stopped || context.signal?.aborted || !pending.length) return;
+    if (!context.isIdle() || mutations.size) {
+      noticeTimer ??= setTimeout(() => { noticeTimer = undefined; void flush().catch(report); }, 250);
+      noticeTimer.unref(); return;
+    }
     for (const run of pending) queued.add(run.receipt);
     pi.sendMessage({ customType: RESULT_MESSAGE, display: true,
       content: pending.map(run => `${runSummary(run)}\n${clip(run.output || run.error || '')}`).join('\n\n'),
-      details: { summary: pending.map(run => `${run.agent} ${run.status}`).join(', '), runs: pending, receipts: pending.map(run => run.receipt) } satisfies Details,
+      details: { summary: pending.map(run => `${run.agent} ${run.status}`).join(', '), runs: storedRuns(pending), receipts: pending.map(run => run.receipt) } satisfies Details,
     }, { triggerTurn: true, deliverAs: 'followUp' });
     // The outbox stays pending until the receipt appears in the parent's saved transcript.
   }
   async function reset(context?: ExtensionContext): Promise<void> {
     generation++; stopped = true;
     if (noticeTimer) clearTimeout(noticeTimer);
-    noticeTimer = undefined; queued.clear(); reading.clear();
+    noticeTimer = undefined; queued.clear(); reading.clear(); mutations.clear();
     const old = runtime; runtime = undefined;
     ctx?.ui.setStatus('pi-subagents', undefined);
     if (ctx) pickerShortcut.dispose(ctx);
@@ -114,8 +121,12 @@ export default function subagents(pi: ExtensionAPI, options: {
     changed();
   }
   async function use(context: ExtensionContext): Promise<SubagentRuntime> {
+    ready = ready.catch(() => reset(context));
     await ready;
-    if (sessionId !== context.sessionManager.getSessionId() || !runtime) { ready = reset(context); await ready; }
+    if (sessionId !== context.sessionManager.getSessionId() || !runtime) {
+      ready = ready.then(() => sessionId !== context.sessionManager.getSessionId() || !runtime ? reset(context) : undefined);
+      await ready;
+    }
     ctx = context;
     if (!runtime) throw new Error('Subagent runtime unavailable.');
     return runtime;
@@ -130,7 +141,7 @@ export default function subagents(pi: ExtensionAPI, options: {
   }
   const definitions = (context: ExtensionContext) => discoverAgents(join(agentDir, 'agents'), context.isProjectTrusted() ? join(context.cwd, '.pi', 'agents') : undefined);
 
-  async function spawn(owner: SubagentRuntime, params: Static<typeof Params>, context: ExtensionContext, requestId: string): Promise<RunSnapshot> {
+  async function spawn(owner: SubagentRuntime, params: Static<typeof Params>, context: ExtensionContext, requestId: string, callId: string): Promise<RunSnapshot> {
     if (!params.agent || !params.task?.trim()) throw new Error('spawn requires agent and task.');
     const prior = await owner.request(requestId, fingerprint(params));
     if (prior) return prior;
@@ -163,7 +174,7 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
 \n${definition.prompt}\n\n${sharedInstructions}\n\n${capabilityPrompt(selectedCapabilities)}`;
     const contextMode = params.context ?? definition.context ?? settings.context;
     const history = contextMode === 'fork' ? convertToLlm(context.sessionManager.buildSessionProjection().messages) : undefined;
-    return owner.spawn({ definition, trust, capabilities: selectedCapabilities, task: params.task, tools, settings, model: `${model.provider}/${model.id}`, thinking,
+    return owner.spawn({ definition, trust, capabilities: selectedCapabilities, task: params.task, tools, settings, model: `${model.provider}/${model.id}`, thinking, forkCallId: callId,
       instructions, sharedInstructions, isolation, context: contextMode, history, forkParentLeaf: contextMode === 'fork' ? context.sessionManager.getLeafId() ?? undefined : undefined, projectTrusted: [...selectedCapabilities.skills, ...selectedCapabilities.mcpTools, ...selectedCapabilities.hooks].some(item => item.project) || isolation === 'worktree' || contextFiles.length > 0 || definition.source.startsWith(join(context.cwd, '.pi')) }, requestId, fingerprint(params));
   }
 
@@ -194,9 +205,21 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
       'For uncertain writes or commands after recovery, inspect their effects before issuing another operation.',
     ],
     async execute(callId, params, signal, _update, context) {
+      let owner: SubagentRuntime | undefined, requestId: string | undefined;
+      const mutation = Symbol();
       try {
-        const owner = await use(context);
+        owner = await use(context);
         signal?.throwIfAborted();
+        if (['spawn', 'send', 'steer'].includes(params.action)) {
+          if (!params.requestId && !callId.trim()) throw new Error('An empty tool-call ID requires an explicit requestId.');
+          const entry = context.sessionManager.getEntries().findLast(entry => entry.type === 'message' && entry.message.role === 'assistant' &&
+            entry.message.content.some(part => part.type === 'toolCall' && part.id === callId));
+          if (!params.requestId && entry?.type === 'message' && entry.message.role === 'assistant' && entry.message.content.filter(part => part.type === 'toolCall' && part.id === callId).length > 1) {
+            throw new Error('Duplicate tool-call IDs in one message require explicit requestId values.');
+          }
+          requestId = params.requestId ?? (entry ? `parent:${entry.id}:${callId}` : callId);
+          mutations.add(mutation);
+        }
         let runs: RunSnapshot[] = [], text = '', receipts: string[] = [];
         const id = () => { if (!params.id) throw new Error('A child id is required.'); return params.id; };
         switch (params.action) {
@@ -208,9 +231,9 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
             if (found.errors.length) text += '\n\nInvalid definitions:\n' + found.errors.join('\n');
             return { content: [{ type: 'text', text }], details: { summary: `${found.agents.length} agent definitions` } };
           }
-          case 'spawn': runs = [await spawn(owner, params, context, params.requestId ?? callId)]; break;
-          case 'send': runs = [await owner.send(id(), params.task ?? '', params.requestId ?? callId, fingerprint(params))]; break;
-          case 'steer': runs = [await owner.steer(id(), params.task ?? '', params.requestId ?? callId, fingerprint(params))]; break;
+          case 'spawn': runs = [await spawn(owner, params, context, requestId!, callId)]; break;
+          case 'send': runs = [await owner.send(id(), params.task ?? '', requestId!, fingerprint(params))]; break;
+          case 'steer': runs = [await owner.steer(id(), params.task ?? '', requestId!, fingerprint(params))]; break;
           case 'resume': runs = await owner.resume(params.id, true); break;
           case 'status': runs = params.id ? [await owner.get(params.id)] : await owner.list(); break;
           case 'wait': runs = [await owner.wait(id(), params.timeoutMs ?? 30000, signal)]; break;
@@ -226,18 +249,21 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
         const summary = text ? params.action === 'transcript' ? `Transcript ${params.id}` : text : runs.length === 1 ? runSummary(runs[0]) : `${runs.length} subagents, ${runs.filter(isRunning).length} active`;
         text ||= runs.map(run => `${runSummary(run)}\nRun: ${run.run}; receipt: ${run.receipt}\nTrust: ${run.trust ?? 'trusted'}; model: ${run.model}; thinking: ${run.thinking}; tools: ${run.tools.join(', ') || 'none'}${run.capabilities ? `\nCapabilities: ${JSON.stringify(run.capabilities)}` : ''}${run.lifecycleErrors?.length ? `\nLifecycle hook errors: ${run.lifecycleErrors.join('; ')}` : ''}${run.cwd ? `\nWorking directory: ${run.cwd}` : ''}${run.worktree ? `\nBranch: ${run.worktree.branch}; base: ${run.worktree.baseCommit}` : ''}${run.sessionFile ? `\nStorage: ${run.sessionFile}` : ''}${['result', 'wait'].includes(params.action) && !isRunning(run) ? '\n' + clip(run.output || run.error || '') : ''}`).join('\n\n') || summary;
         changed();
-        return { content: [{ type: 'text', text }], details: { summary: oneLine(summary), runs, receipts },
+        return { content: [{ type: 'text', text }], details: { summary: oneLine(summary), runs: storedRuns(runs), receipts },
           isError: params.action === 'result' && runs.some(run => run.status === 'failed' || run.status === 'cancelled') };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: 'text', text: message }], details: { summary: oneLine(message) }, isError: true };
-      }
+        const failed = owner && requestId ? await owner.request(requestId, fingerprint(params)).catch(() => undefined) : undefined;
+        const receipts = failed && !isRunning(failed) ? [failed.receipt] : [];
+        for (const receipt of receipts) reading.add(receipt);
+        return { content: [{ type: 'text', text: message }], details: { summary: oneLine(message), receipts }, isError: true };
+      } finally { mutations.delete(mutation); }
     },
     renderCall: (params, theme) => compactText(theme.fg('toolTitle', `subagent ${params.action}${params.agent ? ' ' + oneLine(params.agent) : ''}${params.id ? ' ' + oneLine(params.id) : ''}`)),
-    renderResult: (result, { expanded }, theme) => expanded ? new Text(result.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n'), 0, 0) : compactText(theme.fg('dim', result.details?.summary ?? 'Subagent')),
+    renderResult: (result, { expanded }, theme) => expanded ? new Text(cleanText(result.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')), 0, 0) : compactText(theme.fg('dim', oneLine(result.details?.summary ?? 'Subagent'))),
   });
   pi.registerMessageRenderer<Details>(RESULT_MESSAGE, (message, { expanded }, theme) => expanded ?
-    new Text(typeof message.content === 'string' ? message.content : JSON.stringify(message.content), 0, 0) : compactText(theme.fg('dim', message.details?.summary ?? 'Subagents finished')));
+    new Text(cleanText(typeof message.content === 'string' ? message.content : JSON.stringify(message.content)), 0, 0) : compactText(theme.fg('dim', oneLine(message.details?.summary ?? 'Subagents finished'))));
 
   async function inspect(context: ExtensionContext, title: string, content: string): Promise<void> {
     if (context.mode !== 'tui') { context.ui.notify(clip(content, 6000), 'info'); return; }
@@ -245,17 +271,25 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
   }
   async function command(args: string, context: ExtensionContext): Promise<void> {
     try {
-      const owner = await use(context);
-      const [action, id] = args.trim().split(/\s+/);
+      let [action, id] = args.trim().split(/\s+/);
+      action = action.replace(/^#(?=\d)/, ''); id = id?.replace(/^#(?=\d)/, '');
       if (action === 'config') {
-        const settings = await readSubagentSettings(configPath);
-        if (!context.hasUI) { context.ui.notify(`${configPath}\n${JSON.stringify(settings, null, 2)}`, 'info'); return; }
-        const value = await context.ui.editor('Subagent settings', JSON.stringify(settings, null, 2));
-        if (value !== undefined) {
-          await writeSubagentSettings(configPath, JSON.parse(value));
-          configureFooter(context, (await readSubagentSettings(configPath)).indicatorPosition);
+        let draft: string;
+        try { draft = await readFile(configPath, 'utf8'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; draft = JSON.stringify(DEFAULT_SUBAGENT_SETTINGS, null, 2); }
+        if (!context.hasUI) { context.ui.notify(`${configPath}\n${cleanText(draft)}`, 'info'); return; }
+        try { await readSubagentSettings(configPath); } catch (error) { context.ui.notify(oneLine(String(error)), 'error'); }
+        for (;;) {
+          const value = await context.ui.editor('Subagent settings', draft);
+          if (value === undefined) return;
+          draft = value;
+          try { await writeSubagentSettings(configPath, JSON.parse(value)); }
+          catch (error) { context.ui.notify(oneLine(String(error)), 'error'); continue; }
+          configureFooter(context, (await readSubagentSettings(configPath)).indicatorPosition); return;
         }
-      } else if (action === 'stop') {
+      }
+      const owner = await use(context);
+      if (action === 'stop') {
         if (id) await owner.stop(id);
         else { stopped = true; await owner.pauseNotifications(true); await owner.cancelAll(); }
       } else if (action === 'resume') {
@@ -279,7 +313,7 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
             }, theme, () => done(), () => tui.requestRender(), () => overlay ? tui.terminal.rows : Math.max(1, tui.terminal.rows - 6), action === 'steer'),
           overlay ? { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 } } : undefined);
         }
-      } else if (!context.hasUI) context.ui.notify((await owner.list()).map(runSummary).join('\n') || 'No subagents.', 'info');
+      } else if (context.mode !== 'tui' || !context.hasUI) context.ui.notify(cleanText((await owner.list()).map(runSummary).join('\n')) || 'No subagents.', 'info');
       else {
         for (;;) {
           const runs = await owner.browserRuns();

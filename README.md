@@ -114,13 +114,13 @@ For untrusted children, `skills`, `mcpTools`, and `hooks` accept explicit lists 
 
 Launch values replace corresponding definition defaults. Exclusions apply after selection. An explicit `mcpTools` value takes precedence over server selection. An explicit launch `mcpServers` list replaces the definition's MCP selection. Unknown explicit capability names fail; exclusion names may cover capabilities not currently installed.
 
-Inherited skills appear as names and descriptions. The child loads instructions and supporting files through `skill_read`. That reader rejects paths and symbolic links outside the selected skill directory, including in a worktree. Skills marked `disable-model-invocation: true` require an explicit list. Skill text cannot grant tools, and skill scripts require existing shell permission.
+Inherited skills appear as names and descriptions. The child loads instructions and supporting files through `skill_read`. That reader rejects paths and symbolic links outside the selected skill directory, including in a worktree. Flat-file skills expose only their selected Markdown entry file. Skills marked `disable-model-invocation: true` require an explicit list. Skill text cannot grant tools, and skill scripts require existing shell permission.
 
 MCP calls use exact saved tool names and validated arguments. Read-only annotations are required for `read-only` and `edit` profiles. Mutating or unclassified tools require `full`. Each child opens its own connection using Pi's existing server configuration, environment expansion, OAuth store, and provider authentication. Stdio servers start in the child working directory. New logins return an error to the parent instead of opening a child prompt.
 
 ## Define an agent
 
-Definitions are Markdown files with YAML frontmatter. The plugin loads built-ins, then user definitions in `~/.pi/agent/agents/`, then trusted project definitions in `.pi/agents/`. Higher scopes replace names. Invalid or duplicate definitions block that name instead of falling back to broader permissions.
+Definitions are Markdown files with YAML frontmatter. The plugin loads built-ins, then user definitions in `~/.pi/agent/agents/`, then trusted project definitions in `.pi/agents/`. Higher scopes replace names. Invalid or duplicate definitions block that name instead of falling back to broader permissions. An invalid file whose agent name cannot be identified blocks definitions from that scope and lower scopes until repaired.
 
 ```yaml
 ---
@@ -166,7 +166,7 @@ Examples: [block environment-file edits](examples/hooks/protect-env.ts) and [che
 
 ## Isolate files in a worktree
 
-`isolation: "worktree"` requires a trusted Git project with a commit at `HEAD`. It creates a dedicated branch and checkout under `.pi/subagents/worktrees/`. Git's local exclude file keeps that directory out of the parent index. The child keeps the parent's relative working directory inside the repository.
+`isolation: "worktree"` requires a trusted Git project with a commit at `HEAD`. The parent's working directory must exist in that commit. Validation runs before creating a branch or checkout. It creates a dedicated branch and checkout under `.pi/subagents/worktrees/`. Git's local exclude file keeps that directory out of the parent index. The child keeps the parent's relative working directory inside the repository.
 
 Worktrees contain committed files; parent modifications and untracked files are absent. Follow-ups and recovery reuse the saved branch, checkout, and changes. File tools reject paths outside that checkout. Shell commands start inside it, but have no operating-system sandbox.
 
@@ -178,13 +178,21 @@ Recovery starts when Pi opens the same saved parent chat, including after `/relo
 
 Children retain their IDs, conversations, tasks, models, settings, allowlists, ownership, and pending results. Completed, failed, cancelled, and closed tasks do not automatically restart. A cancelled or failed child needs an explicit `send` for a new task; a closed child rejects new work.
 
+Temporary model-scope, model-availability, project-trust, and capability checks pause recovery without ending the task. The browser shows these tasks under Needs attention. Restore the required access, then call `resume` to continue the same saved checkpoints. A resume with an ID checks only that child. Saved deadlines still apply while recovery is paused. Invalid saved permissions, ownership, missing worktrees, lifecycle failures, and expired deadlines remain final failures. Pausing task records uses a version-specific Pi Durable 1.4 transaction bridge and fails closed if that bridge is unavailable.
+
+If startup fails because settings are invalid or another process holds the lock, later calls retry initialization. `/agents config` works without an initialized runtime, opens invalid settings as text, and retains edits after validation errors.
+
 Saved-parent runtime data lives at `<Pi agent directory>/subagents/sessions/<parent hash>/`, outside the repository. SQLite stores task checkpoints and conversations. A separate SQLite lock prevents two processes from owning the same parent. Ephemeral parents keep child runtime data in memory and lose it on extension reload or process exit.
 
 Starting Pi from your home directory uses `~/.pi/agent` normally. The storage check rejects runtime data inside a Git checkout, including when Pi starts in a subdirectory of that checkout.
 
 Safe file reads can replay after interruption. Writes, edits, commands, and all MCP calls return interruption results when their outcome is uncertain. Effects may already exist, so inspect them before another operation. Recovery checks saved ownership, permission ceilings, allowlists, project trust, worktree identity, and current capability availability before dispatch.
 
+Interrupting a parent turn explicitly cancels all active children, including children started in earlier turns. Those cancellations survive reload. Child MCP connections close when a task ends; a later task reconnects as needed.
+
 Result receipts remain pending until the native parent transcript records them. A restart reuses saved receipts to prevent duplicate automatic delivery. Explicit `result` calls can still read an earlier result. Request deduplication and receipts do not guarantee exactly-once external effects, model billing, or parent reasoning.
+
+Admission failures returned synchronously carry the same receipt as the failed child, preventing a second automatic notification. Automatic request keys include the parent assistant entry when available. Nested calls use their persistent Durable tool-task ID. An empty provider tool-call ID requires an explicit `requestId`. Full child results stay in child storage; parent result metadata contains clipped previews.
 
 ## Tools and commands
 
@@ -202,7 +210,7 @@ Result receipts remain pending until the native parent transcript records them. 
 | `cancel` | `id` | Save cancellation intent and abort. |
 | `close` | `id` | Save closure, abort active work, and retain history. |
 
-Tasks contain one to 50,000 characters. `wait` defaults to 30 seconds and accepts one to 60,000 milliseconds. Aborting a wait does not cancel the child. Token and cost totals cover the child conversation.
+Tasks contain one to 50,000 characters. `wait` defaults to 30 seconds and accepts one to 60,000 milliseconds. Aborting a wait does not cancel the child. Tool-call, token, and cost totals cover the child conversation and exclude imported parent tool calls.
 
 `/agents` opens the task browser. Shift+Left also opens it from the text box. `/agents <id>` opens the child chat. `/agents list` inspects definitions, `/agents config` edits settings, `/agents resume [id]` recovers work, and `/agents stop [id]` cancels one or all active children. Numbers prefixed with `#` are persistent child IDs, not list positions. IDs can have gaps because Pi Durable shares its record counter with other records. Nested entries show their parent ID. Outside the terminal UI, inspection uses text notifications.
 
@@ -215,6 +223,8 @@ Each row shows the child ID, role, status, completed tool calls, and elapsed tim
 Use Up and Down to select rows and Left and Right to collapse or expand categories. Enter or `t` opens the selected child's chat. Closing a chat returns to the browser. The Manage section opens definitions, settings, or recovery. Escape or Shift+Left closes the browser and restores your draft.
 
 Detailed reads and live refresh stop when the browser closes. Outside it, the footer shows only the compact indicator and chat results stay collapsed. These task groups do not add a workflow engine or saved workflow stages.
+
+Browser refresh reuses transcript summaries until saved entries or task metadata change. Full transcript reads occur when a summary changes or a child chat opens.
 
 ## Read and steer a child chat
 

@@ -2,7 +2,7 @@ import { Type, type Static } from 'typebox';
 import type { ToolExecutionResult } from '@earendil-works/pi-durable';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { PERMISSION_TOOLS, type AgentDefinition, type Permissions } from './agents.ts';
-import { capabilityPrompt, capabilityTools, type Capabilities } from './capabilities.ts';
+import { capabilityPrompt, capabilityTools, checkCapabilityPermissions, isProjectPath, type Capabilities } from './capabilities.ts';
 import { resolveSelection, resolveTools, resolveTrust } from './policy.ts';
 import type { SavedChild, SubagentRuntime } from './runtime.ts';
 
@@ -29,11 +29,11 @@ const output = (value: unknown): ToolExecutionResult => {
 };
 
 export async function nestedOperation(runtime: SubagentRuntime, caller: SavedChild, definitions: AgentDefinition[], params: NestedParams,
-  callId: string, signal?: AbortSignal): Promise<ToolExecutionResult> {
+  callId: string, signal?: AbortSignal, taskKey?: string): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   const owned = (child: SavedChild) => child.delegation?.ownerId === String(caller.id) && child.delegation.ownerRun === latest(caller).run;
   const input = JSON.stringify({ ...params, requestId: undefined });
-  const key = `nested:${caller.id}:${latest(caller).run}:${params.requestId ?? callId}`;
+  const key = `nested:${caller.id}:${latest(caller).run}:${params.requestId ?? taskKey ?? callId}`;
   if (params.action === 'list') return output({
     agents: definitions.map(definition => ({ name: definition.name, description: definition.description, permissions: definition.permissions })),
     children: Object.values((await runtime.state()).children).filter(child => owned(child) && !child.closed).map(latest),
@@ -62,10 +62,12 @@ export async function nestedOperation(runtime: SubagentRuntime, caller: SavedChi
       const disabled = selection[field === 'skills' ? 'disabledSkills' : field === 'mcpTools' ? 'disabledMcpTools' : 'disabledHooks'] ?? [];
       return available.filter(item => (!Array.isArray(names) || names.includes(item.name)) && !disabled.includes(item.name)) as Capabilities[K];
     }
+    const selectedMcp = choose('mcpTools'), selectedHooks = choose('hooks');
+    checkCapabilityPermissions({ skills: [], mcpTools: Array.isArray(selection.mcpTools) ? selectedMcp : [], hooks: Array.isArray(selection.hooks) ? selectedHooks : [] }, permissions);
     const capabilities: Capabilities = {
       skills: choose('skills').map(skill => ({ ...skill, ...(Array.isArray(selection.skills) ? { preload: true } : {}) })),
-      mcpTools: choose('mcpTools').filter(tool => (permissions === 'full' || tool.readOnly) && (!selection.mcpServers || selection.mcpServers.includes(tool.server))),
-      hooks: choose('hooks').filter(hook => rank[hook.permissions] <= rank[permissions]),
+      mcpTools: selectedMcp.filter(tool => (permissions === 'full' || tool.readOnly) && (!selection.mcpServers || selection.mcpServers.includes(tool.server))),
+      hooks: selectedHooks.filter(hook => rank[hook.permissions] <= rank[permissions]),
     };
     tools.push(...capabilityTools(capabilities));
     if (tools.some(name => !caller.tools.includes(name))) throw new Error('Nested tools exceed the owner allowlist.');
@@ -79,13 +81,13 @@ export async function nestedOperation(runtime: SubagentRuntime, caller: SavedChi
     if (explicitThinking && !levels.includes(explicitThinking)) throw new Error('Nested thinking level is unsupported by the selected model.');
     const thinking = explicitThinking ?? (levels.includes(caller.thinking) ? caller.thinking : levels[0] ?? 'off');
     const context = params.context ?? definition.context ?? caller.settings.context;
-    const history = context === 'fork' ? (await runtime.entries(String(caller.id))).flatMap(entry => entry.model ?? []) : undefined;
+    const history = context === 'fork' ? await runtime.modelHistory(String(caller.id)) : undefined;
     const instructions = `You are the ${definition.name} subagent. Your immediate parent is child ${caller.id}; the main parent owns user questions.
 Work only on the assigned task. Preserve other agents' edits. Inspect uncertain effects before repeating a write or command.
 Your trust policy is ${trust}. Your permission profile is ${permissions}. Available tools: ${tools.join(', ') || 'none'}.
 ${definition.prompt}\n\n${caller.sharedInstructions ?? ''}\n\n${capabilityPrompt(capabilities)}`;
     return output(await runtime.spawn({ definition, trust, tools, capabilities, task: params.task, model, thinking,
-      settings: { ...caller.settings }, instructions, sharedInstructions: caller.sharedInstructions, projectTrusted: caller.projectTrusted,
+      settings: { ...caller.settings }, instructions, sharedInstructions: caller.sharedInstructions, projectTrusted: caller.projectTrusted || isProjectPath(caller.parentCwd ?? caller.cwd, definition.source), forkCallId: callId,
       isolation: 'shared', context, history, delegation: { ownerId: String(caller.id), ownerRun: latest(caller).run, depth } }, key, input));
   }
   if (!params.id) throw new Error('A nested child ID is required.');

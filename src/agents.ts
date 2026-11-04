@@ -104,6 +104,7 @@ export async function discoverAgents(userDir: string, projectDir?: string): Prom
     const found = new Map<string, AgentDefinition>();
     const duplicates = new Set<string>();
     const invalid = new Set<string>();
+    let ambiguous = false;
     async function visit(dir: string): Promise<void> {
       let entries;
       try { entries = await readdir(dir, { withFileTypes: true }); }
@@ -113,9 +114,11 @@ export async function discoverAgents(userDir: string, projectDir?: string): Prom
         if (entry.isDirectory()) await visit(path);
         else if (entry.isFile() && entry.name.endsWith('.md') && !entry.name.endsWith('.chain.md')) {
           let name = basename(path, '.md');
+          let content: string | undefined, parsed = false;
           try {
-            const content = await readFile(path, 'utf8');
+            content = await readFile(path, 'utf8');
             const declared = parseFrontmatter(content).frontmatter.name;
+            parsed = true;
             if (typeof declared === 'string') name = declared.trim();
             const agent = parseAgent(content, path);
             if (found.has(agent.name)) { duplicates.add(agent.name); throw new Error(`Duplicate agent name: ${agent.name}.`); }
@@ -123,12 +126,20 @@ export async function discoverAgents(userDir: string, projectDir?: string): Prom
           } catch (error) {
             // A broken override must never fall back to a builtin with broader tools.
             errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+            if (!parsed) {
+              const header = content?.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+              const names = header?.split(/\r?\n/).filter(line => /^name\s*:/.test(line));
+              const recovered = names?.length === 1 ? names[0].match(/^name\s*:\s*(["']?)([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})\1\s*(?:#.*)?$/)?.[2] : undefined;
+              if (recovered) name = recovered;
+              else ambiguous = true;
+            }
             invalid.add(name);
           }
         }
       }
     }
     await visit(root);
+    if (ambiguous) { agents.clear(); errors.push(`Cannot identify an invalid agent override in ${root}. Repair it before launching agents.`); return; }
     for (const name of [...duplicates, ...invalid]) { found.delete(name); agents.delete(name); }
     for (const [name, agent] of found) agents.set(name, agent);
   }

@@ -6,6 +6,7 @@ import { fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { JsonObject } from '@earendil-works/pi-durable';
 import { BUILTIN_AGENTS } from '../src/agents.ts';
 import { Children } from '../src/runtime.ts';
+import { nestedOperation } from '../src/nested.ts';
 import { runSummary } from '../src/ui.ts';
 import { git } from '../src/worktrees.ts';
 import { fixture, fauxAssistantMessage as answer } from './fixtures.ts';
@@ -48,6 +49,20 @@ test('a real child delegates and receives its own result without notifying the m
     expect((await f.runtime.pending()).map(child => child.id)).toEqual([run.id]);
     expect(runSummary(nested)).toContain(`parent #${run.id}`);
     expect(f.errors).toEqual([]);
+  } finally { await f.cleanup(); }
+});
+
+test('nested automatic request keys distinguish repeated provider call IDs across assistant turns', async () => {
+  const f = await fixture();
+  try {
+    const route = (context: any, options: any) => {
+      if (context.messages.some((message: any) => message.role === 'user' && JSON.stringify(message.content).includes('Repeated nested evidence'))) return hold(context, options);
+      const results = context.messages.filter((message: any) => message.role === 'toolResult' && message.toolName === 'subagent');
+      return results.length < 2 ? call({ action: 'spawn', agent: 'Explore', task: 'Repeated nested evidence' }, 'call_0') : answer('Spawned two independent tasks');
+    };
+    f.respond(...Array.from({ length: 8 }, () => route));
+    const owner = await f.spawn(); await f.runtime.wait(owner.id, 3000);
+    expect((await f.runtime.list()).filter(child => child.parentChildId === owner.id)).toHaveLength(2);
   } finally { await f.cleanup(); }
 });
 
@@ -128,6 +143,32 @@ test('nested fork context and saved policy survive reload without duplicate chil
       (await tx.doc(Children)).children[nested.id].delegation!.ownerId = nested.id;
     }, C);
     await expect(f.runtime.delegate(nested.id, { action: 'list' }, 'tamper')).rejects.toThrow('ownership');
+  } finally { await f.cleanup(); }
+});
+
+test('nested forks respect the owner context head after a reset', async () => {
+  const f = await fixture();
+  try {
+    f.respond(answer('Old private history'));
+    const owner = await f.spawn({ task: 'OLD_CONTEXT_MARKER' }); await f.runtime.wait(owner.id, 3000);
+    await (await f.runtime.harness.conversation((await f.runtime.saved(owner.id)).id, C))!.reset('CURRENT_CONTEXT_MARKER', C);
+    f.respond(hold, hold);
+    await f.runtime.send(owner.id, 'Current task', 'current', 'current');
+    const child = text(await f.runtime.delegate(owner.id, { action: 'spawn', agent: 'Explore', task: 'Read current context', context: 'fork' }, 'fork-current'));
+    const transcript = await f.runtime.transcript(child.id);
+    expect(transcript).toContain('CURRENT_CONTEXT_MARKER'); expect(transcript).not.toContain('OLD_CONTEXT_MARKER');
+    expect(transcript).not.toContain('Old private history');
+  } finally { await f.cleanup(); }
+});
+
+test('nested project definitions record their own project trust dependency', async () => {
+  const f = await fixture();
+  try {
+    f.respond(hold, hold);
+    const owner = await f.spawn({ projectTrusted: false });
+    const definition = { ...BUILTIN_AGENTS[0], name: 'project-agent', source: join(f.cwd, '.pi', 'agents', 'project-agent.md') };
+    const result = text(await nestedOperation(f.runtime, await f.runtime.saved(owner.id), [definition], { action: 'spawn', agent: definition.name, task: 'Project task' }, 'project'));
+    expect((await f.runtime.saved(result.id)).projectTrusted).toBe(true);
   } finally { await f.cleanup(); }
 });
 

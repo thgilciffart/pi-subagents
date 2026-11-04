@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux';
 import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
 import { editorPickerShortcut, formatSubagentStatus, footerRow, subagentFooter, SUBAGENT_SHORTCUT } from '../src/ui.ts';
 
@@ -80,4 +81,29 @@ test('the indicator occupies the first footer line and keeps other statuses and 
     expect(footer.render(80).join('\n')).not.toContain('Subagents');
   } finally { footer.dispose(); }
   expect(disposed).toBe(true);
+});
+
+test('footer retains usage warnings, subscription and routing information, and safe status colors', () => {
+  const manager = SessionManager.inMemory('/project');
+  const message = fauxAssistantMessage('Answer');
+  message.provider = 'physical'; message.model = 'physical-model';
+  message.usage = { ...message.usage, input: 1000000, cacheRead: 1000000, output: 12, totalTokens: 2000012 };
+  manager.appendMessage(message);
+  let percent = 95;
+  const theme = { fg: (name: string, text: string) => name === 'error' ? `\x1b[31m${text}\x1b[0m` : name === 'warning' ? `\x1b[33m${text}\x1b[0m` : text };
+  const statuses = new Map([['other', '\x1b[32mColored status\x1b[0m\x1b]0;bad\x07']]);
+  const ctx = { cwd: '/project', sessionManager: manager, model: { provider: 'virtual', id: 'router', api: 'pi-virtual', reasoning: true },
+    modelRegistry: { runtime: { isUsingSubscription: () => true } }, thinkingLevel: 'high',
+    getContextUsage: () => ({ percent, contextWindow: 2000000 }) } as any;
+  const footer = subagentFooter(() => ctx, { getGitBranch: () => null, getExtensionStatuses: () => statuses,
+    getAvailableProviderCount: () => 2, onBranchChange: () => () => {} }, theme as any, () => {}, () => true);
+  try {
+    const rows = footer.render(240), plain = rows.map(stripTerminalSequences).join('\n');
+    expect(plain).toContain('↑1M'); expect(plain).toContain('CH50.0%'); expect(plain).toContain('(sub)');
+    expect(plain).toContain('(virtual) router · high → physical/physical-model');
+    expect(rows[1]).toContain('\x1b[31m95.0%/2M (auto)');
+    expect(rows[2]).toContain('\x1b[32mColored status'); expect(rows[2]).not.toContain('\x1b]');
+    percent = 80; expect(footer.render(240)[1]).toContain('\x1b[33m80.0%');
+    ctx.model.reasoning = false; expect(stripTerminalSequences(footer.render(240)[1])).not.toContain('· high');
+  } finally { footer.dispose(); }
 });

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFile, lstat, mkdir, readFile, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { getPackageDir } from '@earendil-works/pi-coding-agent';
@@ -28,8 +28,14 @@ export async function planWorktree(cwd: string, root?: string): Promise<Worktree
   const path = await canonicalPath(join(root ?? join(sourceRoot, '.pi', 'subagents', 'worktrees'), randomUUID()));
   const commonDir = await realpath(await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
   const baseCommit = await git(cwd, ['rev-parse', '--verify', 'HEAD^{commit}']);
+  const relativeCwd = relative(sourceRoot, await realpath(cwd));
+  if (relativeCwd) {
+    let type: string | undefined;
+    try { type = await git(sourceRoot, ['cat-file', '-t', `${baseCommit}:${relativeCwd.split(sep).join('/')}`]); } catch {}
+    if (type !== 'tree') throw new Error('The parent working directory does not exist at HEAD. Start from a committed directory before creating a worktree.');
+  }
   return { path, branch: `pi-subagents/${randomUUID()}`, baseCommit, sourceRoot, commonDir,
-    relativeCwd: relative(sourceRoot, await realpath(cwd)), ready: false };
+    relativeCwd, ready: false };
 }
 
 async function registered(worktree: Worktree): Promise<{ branch?: string; locked: boolean } | undefined> {

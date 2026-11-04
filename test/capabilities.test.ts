@@ -65,6 +65,12 @@ describe('parent-managed child capabilities', () => {
       const selected = await h.capabilities.select({}, 'read-only');
       expect(selected.skills.map(skill => skill.name)).toEqual(['flat']);
       expect(await h.capabilities.skillPath(selected, 'flat')).toBe(path);
+      await writeFile(join(f.agentDir, 'excluded.md'), 'Do not expose');
+      await mkdir(join(f.agentDir, 'excluded-skill'));
+      await writeFile(join(f.agentDir, 'excluded-skill', 'SKILL.md'), 'Do not expose');
+      await expect(h.capabilities.skillPath(selected, 'flat', 'excluded.md')).rejects.toThrow('only');
+      await expect(h.capabilities.skillPath(selected, 'flat', 'excluded-skill/SKILL.md')).rejects.toThrow('only');
+      expect(await h.capabilities.skillPath(selected, 'flat', 'flat.md')).toBe(path);
       h.trust(true); const trusted = await h.capabilities.select({}, 'read-only');
       expect(trusted.skills.map(skill => skill.name)).toEqual(['flat', 'project']);
       h.trust(false); await expect(h.capabilities.validate(trusted)).rejects.toThrow('trust');
@@ -183,7 +189,13 @@ test('native MCP uses existing Pi config/auth support, child cwd, and saved sche
     bridge = new NativeMcpBridge({ getAllTools: () => tools, getMcpServers: () => [], getActiveTools: () => active }, () => context, f.agentDir);
     const saved = await bridge.catalog(); expect(saved).toHaveLength(2);
     expect(JSON.stringify(saved)).not.toContain('command');
-    expect(JSON.stringify(await bridge.call(saved[0], '1', f.cwd, {}))).toContain(f.cwd);
+    const inspected = JSON.stringify(await bridge.call(saved[0], '1', f.cwd, {}));
+    expect(inspected).toContain(f.cwd);
+    const pid = Number(inspected.match(/pid (\d+)/)![1]);
+    await bridge.release('1');
+    await expect.poll(() => { try { process.kill(pid, 0); return false; } catch { return true; } }).toBe(true);
+    const reconnected = JSON.stringify(await bridge.call(saved[0], '1', f.cwd, {}));
+    expect(Number(reconnected.match(/pid (\d+)/)![1])).not.toBe(pid);
     await bridge.call(saved[1], '1', f.cwd, {}); expect(await readFile(join(f.dir, 'mcp-effect'), 'utf8')).toBe('x');
     active = [];
     await expect(bridge.call(saved[1], '1', f.cwd, {})).rejects.toThrow('changed or is unavailable');
@@ -250,4 +262,48 @@ test('empty allowlists do not discover or validate unrelated MCP servers and hoo
   expect(none).toEqual(emptyCapabilities());
   await expect(h.capabilities.validate(none)).resolves.toBeUndefined();
   await expect(h.capabilities.catalog()).rejects.toThrow('Unrelated MCP');
+});
+
+test('hookless tool dispatch ignores unrelated duplicate and malformed hooks', async () => {
+  const h = setup(), f = await fixture(false, 'parent', h.create);
+  try {
+    registerChildHook({ events: h.events }, hookSpec); registerChildHook({ events: h.events }, hookSpec);
+    registerChildHook({ events: h.events }, { name: 'broken' } as ChildHook);
+    f.respond(call('ls', {}), context => {
+      expect(JSON.stringify(context)).not.toContain('Invalid child hook');
+      expect(JSON.stringify(context)).not.toContain('Duplicate child hook');
+      return answer('Listed files');
+    });
+    const run = await f.spawn({ tools: ['ls'], capabilities: emptyCapabilities(), trust: 'untrusted' });
+    expect((await f.runtime.wait(run.id, 3000)).output).toBe('Listed files');
+  } finally { await f.cleanup(); }
+});
+
+test('nested explicit capabilities above the descendant profile fail instead of disappearing', async () => {
+  const tool: McpSnapshot = { name: 'mcp__fixture__write', server: 'fixture', description: 'Write', parameters: {}, readOnly: false, signature: '1', configHash: '1', project: false };
+  const h = setup({ ...noMcp, catalog: async () => [tool] }), f = await fixture(false, 'parent', h.create);
+  try {
+    registerChildHook({ events: h.events }, { ...hookSpec, permissions: 'full' });
+    const selected = await h.capabilities.select({ skills: [], mcpTools: [tool.name], hooks: ['policy'] }, 'full');
+    f.respond(async (_context, options) => {
+      await new Promise<void>(resolve => options?.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      return answer('', { stopReason: 'aborted' });
+    });
+    const owner = await f.spawn({ definition: BUILTIN_AGENTS[2], tools: [...BUILTIN_AGENTS[2].tools, ...capabilityTools(selected)], capabilities: selected });
+    await expect(f.runtime.delegate(owner.id, { action: 'spawn', agent: 'Explore', task: 'Read', mcpTools: [tool.name] }, 'mutating')).rejects.toThrow('full permissions');
+    await expect(f.runtime.delegate(owner.id, { action: 'spawn', agent: 'Explore', task: 'Read', hooks: ['policy'] }, 'hook')).rejects.toThrow('exceeds');
+  } finally { await f.cleanup(); }
+});
+
+test('terminal children release MCP connections and follow-up tasks can reconnect', async () => {
+  const released: string[] = [];
+  const h = setup({ ...noMcp, release: async id => { released.push(id); } }), f = await fixture(false, 'parent', h.create);
+  try {
+    f.respond(answer('First'), answer('Second'));
+    const run = await f.spawn(); await f.runtime.wait(run.id, 3000);
+    await expect.poll(() => released).toContain(run.id);
+    const count = released.length;
+    await f.runtime.send(run.id, 'Next', 'next', 'next'); await f.runtime.wait(run.id, 3000);
+    await expect.poll(() => released.length).toBeGreaterThan(count);
+  } finally { await f.cleanup(); }
 });

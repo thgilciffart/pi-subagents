@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { BUILTIN_AGENTS, PERMISSION_TOOLS } from '../src/agents.ts';
-import { checkWorktreePath, ensureWorktree, git } from '../src/worktrees.ts';
+import { checkWorktreePath, ensureWorktree, git, planWorktree } from '../src/worktrees.ts';
 import { fixture, fauxAssistantMessage as answer } from './fixtures.ts';
 
 async function repository(cwd: string) {
@@ -14,6 +14,18 @@ async function repository(cwd: string) {
   await git(cwd, ['add', 'baseline.txt']); await git(cwd, ['commit', '-m', 'Add fixture baseline']);
 }
 const worker = { ...BUILTIN_AGENTS[2] };
+
+test('an untracked cwd fails before creating a worktree or branch', async () => {
+  const f = await fixture();
+  try {
+    await repository(f.cwd); const cwd = join(f.cwd, 'new-directory'); await mkdir(cwd);
+    const trees = await git(f.cwd, ['worktree', 'list', '--porcelain']);
+    const branches = await git(f.cwd, ['branch', '--list']);
+    await expect(planWorktree(cwd)).rejects.toThrow('does not exist at HEAD');
+    expect(await git(f.cwd, ['worktree', 'list', '--porcelain'])).toBe(trees);
+    expect(await git(f.cwd, ['branch', '--list'])).toBe(branches);
+  } finally { await f.cleanup(); }
+});
 
 describe('isolated child worktrees', () => {
   test('runs file tools in a branch at parent HEAD without copying dirty or untracked parent files', async () => {

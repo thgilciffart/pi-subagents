@@ -49,3 +49,12 @@ test('ephemeral parents create no runtime files even inside a checkout', async (
     } finally { await store.storage.close(BACKGROUND_CONTEXT); store.release(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('runtime storage is rejected inside a different repository from the parent project', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-subagents-other-repo-'));
+  try {
+    const cwd = join(dir, 'project'), dotfiles = join(dir, 'dotfiles');
+    await mkdir(cwd); await mkdir(join(dotfiles, '.git'), { recursive: true });
+    await expect(openStore(join(dotfiles, 'agent'), join(dir, 'parent.jsonl'), 'parent', cwd)).rejects.toThrow('outside the Git repository');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
