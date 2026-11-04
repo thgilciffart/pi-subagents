@@ -54,6 +54,7 @@ type Steer = (text: string, requestId: string, expectedRun: number) => Promise<v
 export class SubagentChat implements Component {
   focused = true;
   private offset = 0;
+  private viewportHeight = 1;
   private follow = true;
   private showTools = false;
   private showInherited = false;
@@ -110,7 +111,7 @@ export class SubagentChat implements Component {
       this.requestRender(); return;
     }
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c')) || data === 'q') { this.done(); return; }
-    const page = Math.max(1, this.rows() - 12);
+    const page = Math.max(1, this.viewportHeight);
     if (data === 's' || data === 'S') this.startSteering();
     else if (data === 'o' || data === 'O') { this.showTools = !this.showTools; this.bodies.clear(); }
     else if (data === 'i' || data === 'I') { this.showInherited = !this.showInherited; this.bodies.clear(); }
@@ -180,13 +181,18 @@ export class SubagentChat implements Component {
       this.input.focused = this.focused;
       bottom.push(...this.input.render(width));
     } else bottom.push(this.theme.fg('muted', truncateToWidth(` ↑↓ scroll · End latest · O tool output · I inherited${run.status === 'running' ? ' · S steer' : ''} · Esc back`, width)));
-    const height = Math.max(1, this.rows() - bottom.length - 9);
+    const rows = Math.max(1, this.rows());
+    const border = this.theme.fg('borderAccent', '─'.repeat(width));
+    const footer = [border, ...bottom].slice(-rows);
+    const top = [truncateToWidth(header, width), this.theme.fg('muted', truncateToWidth(meta, width)), border]
+      .slice(0, Math.max(0, rows - footer.length));
+    const height = Math.max(0, rows - top.length - footer.length);
+    this.viewportHeight = height;
     const maxOffset = Math.max(0, body.length - height);
     this.offset = this.follow ? maxOffset : Math.min(this.offset, maxOffset);
     const content = body.slice(this.offset, this.offset + height);
-    return [truncateToWidth(header, width), this.theme.fg('muted', truncateToWidth(meta, width)),
-      this.theme.fg('borderAccent', '─'.repeat(width)), ...content,
-      this.theme.fg('borderAccent', '─'.repeat(width)), ...bottom].map(line => visibleWidth(line) > width ? truncateToWidth(line, width) : line);
+    while (content.length < height) content.push('');
+    return [...top, ...content, ...footer].map(line => visibleWidth(line) > width ? truncateToWidth(line, width) : line);
   }
   invalidate(): void { this.bodies.clear(); }
   dispose(): void { this.disposed = true; clearInterval(this.timer); }

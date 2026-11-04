@@ -20,6 +20,45 @@ const snapshot = (status = 'running'): ChildChatSnapshot => ({ run: { id: '9', a
     entry(5, answer('## Findings\n\nReadable **assistant** evidence.\n\n- One finding\n- Another finding'), 'pi.assistant')] });
 const rendered = (chat: SubagentChat, width = 100) => chat.render(width).map(stripTerminalSequences).join('\n');
 
+test('short and long chats fill the terminal and keep controls at the bottom after resize', () => {
+  const view = snapshot('completed'); let rows = 32;
+  view.entries = [entry(1, answer('Saved reply'))];
+  const chat = new SubagentChat(view, async () => view, async () => {}, theme, () => {}, () => {}, () => rows);
+  try {
+    for (rows of [32, 50, 12, 4, 1]) {
+      const lines = chat.render(80);
+      expect(lines).toHaveLength(rows);
+      expect(stripTerminalSequences(lines.at(-1)!)).toContain('Esc back');
+      if (rows >= 12) expect(lines.join('\n')).toContain('Saved reply');
+    }
+    view.run.status = 'running'; rows = 24;
+    view.entries = [entry(1, answer(Array.from({ length: 100 }, (_, index) => `Message row ${index}`).join('\n\n')))];
+    chat.handleInput('S'); chat.handleInput('A direction');
+    for (rows of [24, 40, 10, 2, 1]) {
+      const lines = chat.render(80);
+      expect(lines).toHaveLength(rows);
+      expect(stripTerminalSequences(lines.at(-1)!)).toContain('A direction');
+    }
+  } finally { chat.dispose(); }
+});
+
+test('page scrolling uses the full chat viewport', () => {
+  const view = snapshot('completed');
+  view.entries = [entry(1, answer(Array.from({ length: 100 }, (_, index) => `Message row ${index}`).join('\n')))];
+  const chat = new SubagentChat(view, async () => view, async () => {}, theme, () => {}, () => {}, () => 24);
+  try {
+    chat.handleInput('\x1b[H');
+    const first = chat.render(80).map(stripTerminalSequences).slice(3, -2);
+    chat.handleInput('\x1b[6~');
+    const next = chat.render(80).map(stripTerminalSequences).slice(3, -2);
+    expect(first).toHaveLength(19);
+    expect(first[1]).toContain('Message row 0');
+    expect(next[0]).toContain('Message row 18');
+    chat.handleInput('\x1b[5~');
+    expect(chat.render(80).map(stripTerminalSequences).slice(3, -2)).toEqual(first);
+  } finally { chat.dispose(); }
+});
+
 test('chat renders roles and Markdown while hiding raw system entries and large tool output', () => {
   const view = snapshot();
   const items = chatItems(view.entries);

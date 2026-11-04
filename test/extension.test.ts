@@ -20,7 +20,7 @@ async function harness(persistent = false) {
   const faux = fauxProvider({ tokensPerSecond: Infinity }); models.registerNativeProvider(faux.provider);
   let manager = persistent ? SessionManager.create(cwd, join(dir, 'sessions')) : SessionManager.inMemory(cwd);
   const handlers = new Map<string, any>(), tools = new Map<string, any>(), commands = new Map<string, any>(), renderers = new Map<string, any>(), shortcuts = new Map<string, any>();
-  const messages: any[] = [], notifications: any[] = [], statuses: any[] = [], footers: any[] = [], customViews: any[] = [];
+  const messages: any[] = [], notifications: any[] = [], statuses: any[] = [], footers: any[] = [], customViews: any[] = [], customOptions: any[] = [];
   const forwarded: string[] = [];
   let editorText = '';
   const baseFactory = () => ({ getText: () => editorText, handleInput: (data: string) => forwarded.push(data) });
@@ -31,10 +31,11 @@ async function harness(persistent = false) {
     ui: { setStatus: (key: string, value: unknown) => statuses.push({ key, value }), notify: (text: string) => notifications.push(text),
       getEditorComponent: () => editorFactory,
       setEditorComponent: (factory: any) => { editorFactory = factory ?? baseFactory; editor = editorFactory({}, {}, {}); },
-      custom: async (factory: any) => {
+      custom: async (factory: any, options: any) => {
         let result: any;
         const component = await factory({ terminal: { rows: 32 }, requestRender: () => {} }, { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text }, {}, (value: any) => { result = value; });
         customViews.push(component.render(120));
+        customOptions.push(options);
         component.dispose?.();
         return result;
       },
@@ -61,7 +62,7 @@ async function harness(persistent = false) {
       isError: result.isError ?? false, timestamp: Date.now(), details: result.details });
     return result;
   };
-  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, shortcuts, customViews, emit, tool, forwarded,
+  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, shortcuts, customViews, customOptions, emit, tool, forwarded,
     get editor() { return editor; }, text: (value: string) => { editorText = value; }, get runtime() { return runtime; }, pi,
     persist: (value: boolean) => { persistMessages = value; },
     reload: async () => {
@@ -332,6 +333,25 @@ test('task completion leaves the detailed browser hidden until Shift+Left opens 
     expect(h.customViews).toHaveLength(1);
     expect(h.customViews[0].join('\n')).toContain('Completed');
     expect(h.customViews[0].join('\n')).toContain('Inspect the task tree');
+  } finally { await h.cleanup(); }
+});
+
+test('a saved child chat opens across the full terminal after reload', async () => {
+  const h = await harness(true);
+  try {
+    h.faux.setResponses([answer('Saved child evidence')]);
+    const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect saved chat' });
+    const id = spawned.details.runs[0].id;
+    await h.runtime.wait(id, 3000);
+    await h.reload();
+    h.text('Keep the parent draft');
+    await h.commands.get('agents').handler(id, h.context);
+    expect(h.customOptions.at(-1)).toEqual({ overlay: true,
+      overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 } });
+    expect(h.customViews.at(-1)).toHaveLength(32);
+    expect(h.customViews.at(-1).join('\n')).toContain('Saved child evidence');
+    expect(h.customViews.at(-1).at(-1)).toContain('Esc back');
+    expect(h.editor.getText()).toBe('Keep the parent draft');
   } finally { await h.cleanup(); }
 });
 

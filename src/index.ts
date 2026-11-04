@@ -274,7 +274,8 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
           await context.ui.custom<void>((tui, theme, _keys, done) => new SubagentChat(snapshot, () => owner.chatSnapshot(target),
             async (text, requestId, expectedRun) => {
               await owner.steer(target, text, requestId, JSON.stringify({ source: 'user', id: target, run: expectedRun, task: text }), expectedRun, 'user');
-            }, theme, () => done(), () => tui.requestRender(), () => tui.terminal.rows, action === 'steer'));
+            }, theme, () => done(), () => tui.requestRender(), () => tui.terminal.rows, action === 'steer'),
+          { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 } });
         }
       } else if (!context.hasUI) context.ui.notify((await owner.list()).map(runSummary).join('\n') || 'No subagents.', 'info');
       else {
