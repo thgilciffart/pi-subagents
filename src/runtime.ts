@@ -27,7 +27,7 @@ export type RunSnapshot = {
   tools: string[]; startedAt: number; finishedAt?: number; turns: number; toolCalls: number; activity?: string;
   output: string; error?: string; sessionFile?: string; tokens: number; cost: number;
   trust?: Trust;
-  parentChildId?: string; depth?: number;
+  parentChildId?: string; parentRun?: number; depth?: number;
   lifecycleErrors?: string[];
   context?: ContextMode;
   capabilities?: { skills: string[]; mcpTools: string[]; hooks: string[] };
@@ -367,6 +367,27 @@ export class SubagentRuntime {
   async list(): Promise<RunSnapshot[]> {
     const state = await this.state();
     return Object.values(state.children).filter(child => !child.closed).map(child => clone(latest(child)));
+  }
+  /** Read live details only while the on-demand browser is open. */
+  async browserRuns(): Promise<RunSnapshot[]> {
+    const state = await this.state();
+    return Promise.all((await this.list()).map(async run => {
+      run.parentRun = state.children[run.id]?.delegation?.ownerRun;
+      const [entries, usage] = await Promise.all([this.entries(run.id), this.harness.snapshot(UsageDoc, Number(run.id) as ConversationId, C)]);
+      const messages = entries.filter(entry => entry.kind !== 'pi-subagents.fork').flatMap(entry => entry.model ?? []);
+      run.toolCalls = messages.filter(message => message.role === 'toolResult').length;
+      run.tokens = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.totalTokens, 0);
+      run.cost = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.cost.total, 0);
+      if (isRunning(run)) {
+        const index = messages.findLastIndex(message => message.role === 'assistant');
+        const assistant = messages[index];
+        const results = messages.slice(index + 1).filter(message => message.role === 'toolResult');
+        const pending = assistant?.role === 'assistant' ? assistant.content.find(part => part.type === 'toolCall' &&
+          !results.some(message => message.role === 'toolResult' && message.toolCallId === part.id)) : undefined;
+        if (pending?.type === 'toolCall') run.activity = `${pending.name} ${JSON.stringify(pending.arguments).slice(0, 300)}`;
+      }
+      return run;
+    }));
   }
   async get(id: string): Promise<RunSnapshot> { return clone(latest(await this.saved(id))); }
   async request(key: string, input: string): Promise<RunSnapshot | undefined> {

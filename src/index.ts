@@ -12,6 +12,7 @@ import { parentRuntime, SubagentRuntime, isRunning, type RunSnapshot, type Saved
 import { openStore } from './storage.ts';
 import { parentReceipts, RESULT_MESSAGE } from './receipts.ts';
 import { compactText, editorPickerShortcut, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
+import { SubagentBrowser } from './browser.ts';
 
 const Params = Type.Object({
   action: Type.Union(['list', 'spawn', 'send', 'steer', 'resume', 'status', 'wait', 'result', 'transcript', 'cancel', 'close'].map(value => Type.Literal(value))),
@@ -266,10 +267,14 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
         await inspect(context, `Subagent ${action}`, `${runSummary(run)}\n${run.model} · ${run.thinking}\nTask: ${run.task}\n\n${await owner.transcript(action)}`);
       } else if (!context.hasUI) context.ui.notify((await owner.list()).map(runSummary).join('\n') || 'No subagents.', 'info');
       else {
-        const items = new Map((await owner.list()).map(run => [runSummary(run), run.id]));
-        items.set('Browse agent definitions', 'list'); items.set('Edit settings', 'config'); items.set('Resume unfinished tasks', 'resume');
-        const selected = await context.ui.select('Subagents · # is the persistent child ID', [...items.keys()]);
-        if (selected) await command(items.get(selected)!, context);
+        for (;;) {
+          const runs = await owner.browserRuns();
+          const selected = await context.ui.custom<string | undefined>((tui, theme, _keys, done) => new SubagentBrowser(runs,
+            () => owner.browserRuns(), theme, done, () => tui.requestRender(), () => tui.terminal.rows));
+          if (!selected) break;
+          await command(selected, context);
+          if (runtime !== owner) break;
+        }
       }
     } catch (error) { report(error); }
   }

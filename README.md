@@ -10,7 +10,7 @@ This is a standalone package, separate from pi-qol. It targets Pi 1.4.x and Node
 pi install git:github.com/thgilciffart/pi-subagents
 ```
 
-Reload Pi, then ask the parent to delegate a task. `/agents` opens the child picker. Shift+Left also opens it from the text box. `/agents <id>` opens a transcript.
+Reload Pi, then ask the parent to delegate a task. `/agents` opens the task browser. Shift+Left also opens it from the text box. `/agents <id>` opens a transcript.
 
 ## Built-in agents
 
@@ -204,13 +204,23 @@ Result receipts remain pending until the native parent transcript records them. 
 
 Tasks contain one to 50,000 characters. `wait` defaults to 30 seconds and accepts one to 60,000 milliseconds. Aborting a wait does not cancel the child. Token and cost totals cover the child conversation.
 
-`/agents` opens the picker. Shift+Left also opens it from the text box. `/agents <id>` opens the transcript. `/agents list` inspects definitions, `/agents config` edits settings, `/agents resume [id]` recovers work, and `/agents stop [id]` cancels one or all active children. Numbers prefixed with `#` are persistent child IDs, not list positions. IDs can have gaps because Pi Durable shares its record counter with other records. Nested entries show their parent ID. Outside the terminal UI, inspection uses text notifications.
+`/agents` opens the task browser. Shift+Left also opens it from the text box. `/agents <id>` opens the transcript. `/agents list` inspects definitions, `/agents config` edits settings, `/agents resume [id]` recovers work, and `/agents stop [id]` cancels one or all active children. Numbers prefixed with `#` are persistent child IDs, not list positions. IDs can have gaps because Pi Durable shares its record counter with other records. Nested entries show their parent ID. Outside the terminal UI, inspection uses text notifications.
+
+## Browse tasks on demand
+
+Press Shift+Left from the text box or run `/agents` to open the live task browser. It groups task trees under Running, Needs attention, Completed, and Cancelled. Nested agents stay beneath the task that created them. The browser shows each child's latest task; descendants of an earlier parent task remain separate from that parent's new work.
+
+Each row shows the child ID, role, status, completed tool calls, and elapsed time. Parent rows summarize descendant progress. Enter or Right expands the model, thinking level, request count, fresh or forked context, conversation token and cost totals, workspace, current tool, result, and error when available. Left collapses details. Completed-tool counts exclude imported parent calls in forks. Usage totals come from the child's recorded model requests. In-flight model usage appears after Pi records it.
+
+Use Up and Down to select rows, Left and Right to collapse or expand categories, and `t` to open the selected child's transcript. Closing a transcript returns to the browser. The Manage section opens definitions, settings, or recovery. Escape or Shift+Left closes the browser and restores your draft.
+
+Detailed reads and live refresh stop when the browser closes. Outside it, the footer shows only the compact indicator and chat results stay collapsed. These task groups do not add a workflow engine or saved workflow stages.
 
 ## Status indicator
 
 While children run, `Subagents N · Shift+←` appears on the right of the first footer line. The count includes nested children. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
 
-This placement uses Pi's custom-footer slot. If another extension supplies your footer, set `indicatorPosition` to `"status"` to use the ordinary extension-status row instead. Change settings with `/agents config`. In either mode, Shift+Left opens the picker whenever the text box has focus, whether empty or not. Your text stays intact. Alt+Left keeps the editor's word-navigation behavior.
+This placement uses Pi's custom-footer slot. If another extension supplies your footer, set `indicatorPosition` to `"status"` to use the ordinary extension-status row instead. Change settings with `/agents config`. In either mode, Shift+Left opens the task browser whenever the text box has focus, whether empty or not. Your text stays intact. Alt+Left keeps the editor's word-navigation behavior.
 
 ## Settings
 

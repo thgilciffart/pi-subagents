@@ -20,7 +20,7 @@ async function harness(persistent = false) {
   const faux = fauxProvider({ tokensPerSecond: Infinity }); models.registerNativeProvider(faux.provider);
   let manager = persistent ? SessionManager.create(cwd, join(dir, 'sessions')) : SessionManager.inMemory(cwd);
   const handlers = new Map<string, any>(), tools = new Map<string, any>(), commands = new Map<string, any>(), renderers = new Map<string, any>(), shortcuts = new Map<string, any>();
-  const messages: any[] = [], notifications: any[] = [], statuses: any[] = [], footers: any[] = [];
+  const messages: any[] = [], notifications: any[] = [], statuses: any[] = [], footers: any[] = [], customViews: any[] = [];
   const forwarded: string[] = [];
   let editorText = '';
   const baseFactory = () => ({ getText: () => editorText, handleInput: (data: string) => forwarded.push(data) });
@@ -31,6 +31,13 @@ async function harness(persistent = false) {
     ui: { setStatus: (key: string, value: unknown) => statuses.push({ key, value }), notify: (text: string) => notifications.push(text),
       getEditorComponent: () => editorFactory,
       setEditorComponent: (factory: any) => { editorFactory = factory ?? baseFactory; editor = editorFactory({}, {}, {}); },
+      custom: async (factory: any) => {
+        let result: any;
+        const component = await factory({ terminal: { rows: 32 }, requestRender: () => {} }, { fg: (_color: string, text: string) => text }, {}, (value: any) => { result = value; });
+        customViews.push(component.render(120));
+        component.dispose?.();
+        return result;
+      },
       setFooter: (factory: any) => footers.push(factory), select: async () => undefined, editor: async () => undefined } };
   const pi: any = {
     events: createEventBus(), getCommands: () => [], getAllTools: () => [], getMcpServers: () => [], getActiveTools: () => [],
@@ -54,7 +61,7 @@ async function harness(persistent = false) {
       isError: result.isError ?? false, timestamp: Date.now(), details: result.details });
     return result;
   };
-  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, shortcuts, emit, tool, forwarded,
+  return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, shortcuts, customViews, emit, tool, forwarded,
     get editor() { return editor; }, text: (value: string) => { editorText = value; }, get runtime() { return runtime; }, pi,
     persist: (value: boolean) => { persistMessages = value; },
     reload: async () => {
@@ -281,25 +288,24 @@ test('the shared status and transcript inspector stay within the terminal width'
 test('Shift+Left opens the picker with text or an empty editor and survives reload', async () => {
   const h = await harness();
   try {
-    let title = '';
-    h.context.ui.select = async (value: string) => { title = value; return undefined; };
+    expect(h.customViews).toHaveLength(0);
     h.text('some words');
     h.editor.handleInput('\x1b[1;3D');
     await flush();
-    expect(title).toBe('');
+    expect(h.customViews).toHaveLength(0);
     expect(h.forwarded).toEqual(['\x1b[1;3D']);
     h.editor.handleInput('\x1b[1;2D');
     await flush();
-    expect(title).toContain('Subagents');
-    expect(title).toContain('persistent child ID');
+    expect(h.customViews.at(-1).join('\n')).toContain('Subagents');
+    expect(h.customViews.at(-1).join('\n')).toContain('persistent child ID');
     expect(h.editor.getText()).toBe('some words');
     expect(h.shortcuts.size).toBe(0);
-    title = '';
+    h.customViews.length = 0;
     await h.reload();
     h.text('');
     h.editor.handleInput('\x1b[1;2D');
     await flush();
-    expect(title).toContain('Subagents');
+    expect(h.customViews.at(-1).join('\n')).toContain('Subagents');
   } finally { await h.cleanup(); }
 });
 
@@ -312,6 +318,20 @@ test('the first-line footer can switch back to the ordinary status row', async (
     expect(h.footers.at(-1)).toBeUndefined();
     await h.reload();
     expect(h.footers.filter(Boolean)).toHaveLength(1);
+  } finally { await h.cleanup(); }
+});
+
+test('task completion leaves the detailed browser hidden until Shift+Left opens it', async () => {
+  const h = await harness();
+  try {
+    h.faux.setResponses([answer('Finished quietly')]);
+    const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect the task tree' });
+    await h.runtime.wait(spawned.details.runs[0].id, 3000); await flush();
+    expect(h.customViews).toHaveLength(0);
+    h.editor.handleInput('\x1b[1;2D'); await flush();
+    expect(h.customViews).toHaveLength(1);
+    expect(h.customViews[0].join('\n')).toContain('Completed');
+    expect(h.customViews[0].join('\n')).toContain('Inspect the task tree');
   } finally { await h.cleanup(); }
 });
 
