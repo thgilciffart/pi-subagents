@@ -32,9 +32,10 @@ export type RunSnapshot = {
   context?: ContextMode;
   capabilities?: { skills: string[]; mcpTools: string[]; hooks: string[] };
   cwd?: string; worktree?: { path: string; branch: string; baseCommit: string };
-  steering?: { id: SubmissionId; task: string }[];
+  steering?: { id: SubmissionId; task: string; source?: 'parent' | 'user' }[];
   receipt: string; delivered: boolean; submissionId?: SubmissionId;
 };
+export type ChildChatSnapshot = { run: RunSnapshot; entries: EntryRecord[] };
 export const isRunning = (run: Pick<RunSnapshot, 'status'>): boolean => run.status === 'starting' || run.status === 'running';
 export type SavedChild = {
   id: ConversationId; anchor: TaskId; parentId: string; definition: AgentDefinition; tools: string[];
@@ -373,21 +374,25 @@ export class SubagentRuntime {
     const state = await this.state();
     return Promise.all((await this.list()).map(async run => {
       run.parentRun = state.children[run.id]?.delegation?.ownerRun;
-      const [entries, usage] = await Promise.all([this.entries(run.id), this.harness.snapshot(UsageDoc, Number(run.id) as ConversationId, C)]);
-      const messages = entries.filter(entry => entry.kind !== 'pi-subagents.fork').flatMap(entry => entry.model ?? []);
-      run.toolCalls = messages.filter(message => message.role === 'toolResult').length;
-      run.tokens = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.totalTokens, 0);
-      run.cost = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.cost.total, 0);
-      if (isRunning(run)) {
-        const index = messages.findLastIndex(message => message.role === 'assistant');
-        const assistant = messages[index];
-        const results = messages.slice(index + 1).filter(message => message.role === 'toolResult');
-        const pending = assistant?.role === 'assistant' ? assistant.content.find(part => part.type === 'toolCall' &&
-          !results.some(message => message.role === 'toolResult' && message.toolCallId === part.id)) : undefined;
-        if (pending?.type === 'toolCall') run.activity = `${pending.name} ${JSON.stringify(pending.arguments).slice(0, 300)}`;
-      }
-      return run;
+      return (await this.readChat(run)).run;
     }));
+  }
+  async chatSnapshot(id: string): Promise<ChildChatSnapshot> { return this.readChat(await this.get(id)); }
+  private async readChat(run: RunSnapshot): Promise<ChildChatSnapshot> {
+    const [entries, usage] = await Promise.all([this.entries(run.id), this.harness.snapshot(UsageDoc, Number(run.id) as ConversationId, C)]);
+    const messages = entries.filter(entry => entry.kind !== 'pi-subagents.fork').flatMap(entry => entry.model ?? []);
+    run.toolCalls = messages.filter(message => message.role === 'toolResult').length;
+    run.tokens = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.totalTokens, 0);
+    run.cost = Object.values(usage?.models ?? {}).reduce((sum, item) => sum + item.cost.total, 0);
+    if (isRunning(run)) {
+      const index = messages.findLastIndex(message => message.role === 'assistant');
+      const assistant = messages[index];
+      const results = messages.slice(index + 1).filter(message => message.role === 'toolResult');
+      const pending = assistant?.role === 'assistant' ? assistant.content.find(part => part.type === 'toolCall' &&
+        !results.some(message => message.role === 'toolResult' && message.toolCallId === part.id)) : undefined;
+      if (pending?.type === 'toolCall') run.activity = `${pending.name} ${(JSON.stringify(pending.arguments) ?? String(pending.arguments)).slice(0, 300)}`;
+    }
+    return { run, entries };
   }
   async get(id: string): Promise<RunSnapshot> { return clone(latest(await this.saved(id))); }
   async request(key: string, input: string): Promise<RunSnapshot | undefined> {
@@ -486,7 +491,7 @@ export class SubagentRuntime {
     return this.get(id);
   }
   /** Steering joins the active task and retains its deadline, budget, and single result receipt. */
-  async steer(id: string, task: string, requestId: string, input: string): Promise<RunSnapshot> {
+  async steer(id: string, task: string, requestId: string, input: string, expectedRun?: number, source: 'parent' | 'user' = 'parent'): Promise<RunSnapshot> {
     const prior = await this.request(requestId, input);
     if (prior) return prior;
     if (!task.trim() || task.length > 50000) throw new Error('Steering requires 1 to 50,000 characters.');
@@ -501,18 +506,19 @@ export class SubagentRuntime {
         return;
       }
       const child = state.children[id];
+      if (expectedRun !== undefined && latest(child).run !== expectedRun) throw new Error('This child has moved to another task. Reopen it before steering.');
       this.check(clone(child));
       const live = await tx.doc(LiveDoc, child.id);
-      if (!live.run) throw new Error('This child is idle. Use send for another task.');
+      if (!live.run) throw new Error(source === 'user' ? 'The child is not ready for steering yet. Wait until it is running and try again.' : 'This child is idle. Use send for another task.');
       const inbox = await tx.doc(InboxDoc, child.id);
       // Pi Durable 1.4 has no active-only submit API. Admit the queued input and its
       // request mapping together while the same transaction verifies the live run.
       const submission = await tx.createSubmission({ type: 'input', conversationId: child.id,
         requestId: `steer:${this.options.parentId}:${requestId}`, status: 'queued' });
-      inbox.items.push({ id: submission.id, mode: 'steer', content: `Parent steering:\n\n${task}` });
+      inbox.items.push({ id: submission.id, mode: 'steer', content: `${source === 'user' ? 'User' : 'Parent'} steering:\n\n${task}` });
       const run = latest(child);
       run.steering ??= [];
-      run.steering.push({ id: submission.id, task });
+      run.steering.push({ id: submission.id, task, ...(source === 'user' ? { source } : {}) });
       state.requests[`r:${requestId}`] = { id, run: run.run, input };
     }, C);
     this.harness.resume(); this.scheduleRefresh();

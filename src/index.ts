@@ -13,6 +13,7 @@ import { openStore } from './storage.ts';
 import { parentReceipts, RESULT_MESSAGE } from './receipts.ts';
 import { compactText, editorPickerShortcut, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
 import { SubagentBrowser } from './browser.ts';
+import { SubagentChat } from './chat.ts';
 
 const Params = Type.Object({
   action: Type.Union(['list', 'spawn', 'send', 'steer', 'resume', 'status', 'wait', 'result', 'transcript', 'cancel', 'close'].map(value => Type.Literal(value))),
@@ -263,8 +264,18 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
         const found = await definitions(context);
         await inspect(context, 'Agent definitions', found.agents.map(agent => `${agent.name} · ${agent.permissions}\n${agent.description}\n${agent.source}\n${agent.prompt}`).join('\n\n') + '\n' + found.errors.join('\n'));
       } else if (action) {
-        const run = await owner.get(action);
-        await inspect(context, `Subagent ${action}`, `${runSummary(run)}\n${run.model} · ${run.thinking}\nTask: ${run.task}\n\n${await owner.transcript(action)}`);
+        const target = action === 'steer' ? id : action;
+        if (!target) throw new Error('A child ID is required.');
+        if (context.mode !== 'tui') {
+          const run = await owner.get(target);
+          await inspect(context, `Subagent ${target}`, `${runSummary(run)}\n\n${run.output || run.error || run.task}\n\n${await owner.transcript(target)}`);
+        } else {
+          const snapshot = await owner.chatSnapshot(target);
+          await context.ui.custom<void>((tui, theme, _keys, done) => new SubagentChat(snapshot, () => owner.chatSnapshot(target),
+            async (text, requestId, expectedRun) => {
+              await owner.steer(target, text, requestId, JSON.stringify({ source: 'user', id: target, run: expectedRun, task: text }), expectedRun, 'user');
+            }, theme, () => done(), () => tui.requestRender(), () => tui.terminal.rows, action === 'steer'));
+        }
       } else if (!context.hasUI) context.ui.notify((await owner.list()).map(runSummary).join('\n') || 'No subagents.', 'info');
       else {
         for (;;) {
@@ -272,7 +283,7 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
           const selected = await context.ui.custom<string | undefined>((tui, theme, _keys, done) => new SubagentBrowser(runs,
             () => owner.browserRuns(), theme, done, () => tui.requestRender(), () => tui.terminal.rows));
           if (!selected) break;
-          await command(selected, context);
+          await command(selected.startsWith('steer:') ? `steer ${selected.slice(6)}` : selected, context);
           if (runtime !== owner) break;
         }
       }

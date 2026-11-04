@@ -4,7 +4,7 @@ import type { Theme } from '@earendil-works/pi-coding-agent';
 import { SubagentBrowser, taskCategory, taskTrees } from '../src/browser.ts';
 import type { RunSnapshot } from '../src/runtime.ts';
 
-const theme = { fg: (_color: string, text: string) => text } as Theme;
+const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
 const run = (id: string, extra: Partial<RunSnapshot> = {}): RunSnapshot => ({
   id, agent: 'Explore', task: `Investigate task ${id}`, run: 1, status: 'running', model: 'local/fixture', thinking: 'high',
   tools: ['read'], startedAt: 1000, turns: 2, toolCalls: 1, output: '', tokens: 2300, cost: 0.001,
@@ -34,7 +34,7 @@ test('the browser renders categorized task trees and expands sanitized details w
     expect(rows.join('\n')).toContain('Cancelled');
     expect(rows.some(row => / {4}└─ ▸ #2/.test(row))).toBe(true);
     expect(rows.join('\n')).not.toContain('local/fixture');
-    browser.handleInput('\r');
+    browser.handleInput('\x1b[C');
     rows = browser.render(160);
     expect(rows.join('\n')).toContain('local/fixture · thinking high');
     expect(rows.join('\n')).toContain('2.3k tokens');
@@ -56,8 +56,24 @@ test('sections collapse and expand while transcript navigation follows the selec
     expect(browser.render(120).join('\n')).toContain('#2 Explore');
     browser.handleInput('\x1b[B'); browser.handleInput('\x1b[B');
     browser.handleInput('t'); expect(action).toBe('2');
+    browser.handleInput('S'); expect(action).toBe('steer:2');
+    browser.handleInput('\r'); expect(action).toBe('2');
     browser.handleInput('\x1b[F'); browser.handleInput('\r'); expect(action).toBe('resume');
     browser.handleInput('\x1b[1;2D'); expect(action).toBeUndefined();
+  } finally { browser.dispose(); }
+});
+
+test('nested siblings keep continuous connectors and only root tasks receive spacing', () => {
+  const browser = new SubagentBrowser([run('1'), run('2', { parentChildId: '1' }), run('3', { parentChildId: '1' }), run('4')],
+    async () => [], theme, () => {}, () => {}, () => 60);
+  try {
+    const rows = browser.render(140);
+    const child = rows.findIndex(row => row.includes('├─ ▸ #2'));
+    const sibling = rows.findIndex(row => row.includes('└─ ▸ #3'));
+    expect(child).toBeGreaterThan(0); expect(sibling).toBeGreaterThan(child);
+    expect(rows.slice(child, sibling).every(row => row.trim())).toBe(true);
+    const nextRoot = rows.findIndex(row => row.includes('▸ #4'));
+    expect(rows[nextRoot - 1].trim()).toBe(''); expect(rows[nextRoot - 2].trim()).not.toBe('');
   } finally { browser.dispose(); }
 });
 

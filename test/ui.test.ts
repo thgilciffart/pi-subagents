@@ -5,7 +5,7 @@ import { editorPickerShortcut, formatSubagentStatus, footerRow, subagentFooter, 
 
 test('the compact indicator uses Subagents and the picker shortcut', () => {
   expect(SUBAGENT_SHORTCUT).toBe('shift+left');
-  expect(formatSubagentStatus([{ status: 'running' }, { status: 'completed' }] as any)).toBe('Subagents 1 · Shift+←');
+  expect(formatSubagentStatus([{ status: 'running' }, { status: 'completed' }] as any)).toBe('Subagents 1');
   expect(formatSubagentStatus([])).toBeUndefined();
 });
 
@@ -61,7 +61,7 @@ test('footer rows preserve right alignment within narrow and wide terminals', ()
 
 test('the indicator occupies the first footer line and keeps other statuses and usage', () => {
   const theme = { fg: (_color: string, text: string) => text };
-  const statuses = new Map([['pi-subagents', 'Subagents 2 · Shift+←'], ['another-extension', 'Other extension status']]);
+  const statuses = new Map([['pi-subagents', 'Subagents 2'], ['another-extension', 'Other extension status']]);
   let disposed = false;
   const manager = SessionManager.inMemory('/project');
   const ctx = { cwd: '/project', sessionManager: manager, model: { id: 'local-model', contextWindow: 10000 }, thinkingLevel: 'high', getContextUsage: () => ({ percent: 12.5, contextWindow: 10000 }) } as any;
@@ -70,7 +70,7 @@ test('the indicator occupies the first footer line and keeps other statuses and 
   try {
     const rows = footer.render(100).map(stripTerminalSequences);
     expect(rows[0]).toContain('/project (main)');
-    expect(rows[0].endsWith('Subagents 2 · Shift+←')).toBe(true);
+    expect(rows[0].endsWith('Subagents 2')).toBe(true);
     expect(rows[1]).toContain('12.5%/10k (auto)');
     expect(rows[1]).toContain('local-model');
     expect(rows[2]).toBe('Other extension status');

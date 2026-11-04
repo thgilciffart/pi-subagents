@@ -33,7 +33,7 @@ async function harness(persistent = false) {
       setEditorComponent: (factory: any) => { editorFactory = factory ?? baseFactory; editor = editorFactory({}, {}, {}); },
       custom: async (factory: any) => {
         let result: any;
-        const component = await factory({ terminal: { rows: 32 }, requestRender: () => {} }, { fg: (_color: string, text: string) => text }, {}, (value: any) => { result = value; });
+        const component = await factory({ terminal: { rows: 32 }, requestRender: () => {} }, { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text }, {}, (value: any) => { result = value; });
         customViews.push(component.render(120));
         component.dispose?.();
         return result;
@@ -297,7 +297,7 @@ test('Shift+Left opens the picker with text or an empty editor and survives relo
     h.editor.handleInput('\x1b[1;2D');
     await flush();
     expect(h.customViews.at(-1).join('\n')).toContain('Subagents');
-    expect(h.customViews.at(-1).join('\n')).toContain('persistent child ID');
+    expect(h.customViews.at(-1).join('\n')).toContain('Enter chat');
     expect(h.editor.getText()).toBe('some words');
     expect(h.shortcuts.size).toBe(0);
     h.customViews.length = 0;
@@ -332,6 +332,20 @@ test('task completion leaves the detailed browser hidden until Shift+Left opens 
     expect(h.customViews).toHaveLength(1);
     expect(h.customViews[0].join('\n')).toContain('Completed');
     expect(h.customViews[0].join('\n')).toContain('Inspect the task tree');
+  } finally { await h.cleanup(); }
+});
+
+test('non-terminal child inspection keeps the saved transcript available as text', async () => {
+  const h = await harness();
+  try {
+    h.faux.setResponses([answer('RPC child evidence')]);
+    const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect RPC transcript' });
+    await h.runtime.wait(spawned.details.runs[0].id, 3000);
+    h.context.mode = 'rpc'; h.context.hasUI = false;
+    await h.commands.get('agents').handler(spawned.details.runs[0].id, h.context);
+    expect(h.notifications.at(-1)).toContain('"role":"user"');
+    expect(h.notifications.at(-1)).toContain('RPC child evidence');
+    expect(h.customViews).toHaveLength(0);
   } finally { await h.cleanup(); }
 });
 

@@ -1,11 +1,11 @@
-import { Key, matchesKey, stripTerminalSequences, truncateToWidth, type Component } from '@earendil-works/pi-tui';
+import { Key, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from '@earendil-works/pi-tui';
 import type { Theme } from '@earendil-works/pi-coding-agent';
 import { isRunning, type RunSnapshot } from './runtime.ts';
 import { SUBAGENT_SHORTCUT } from './ui.ts';
 
 type Category = 'Running' | 'Needs attention' | 'Completed' | 'Cancelled';
 type TaskTree = { run: RunSnapshot; children: TaskTree[] };
-type Row = { key?: string; text: string; color?: 'accent' | 'dim' | 'error' | 'success' | 'warning'; run?: RunSnapshot; category?: Category; action?: string };
+type Row = { key?: string; text: string; color?: 'accent' | 'text' | 'muted' | 'dim' | 'error' | 'success' | 'warning'; run?: RunSnapshot; category?: Category; action?: string };
 const categories: Category[] = ['Running', 'Needs attention', 'Completed', 'Cancelled'];
 
 /** Group by saved ownership, keeping descendants with their root task. */
@@ -73,7 +73,7 @@ export class SubagentBrowser implements Component {
       const color = isRunning(run) ? 'accent' : run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : 'dim';
       rows.push({ key: `run:${run.id}`, run, color, text: `${prefix}${connector}${open ? '▾' : '▸'} #${run.id} ${run.agent}${run.run > 1 ? ` · task ${run.run}` : ''} · ${run.status} · ${run.toolCalls} tool calls · ${elapsed(run, now)}${progress}` });
       const indent = prefix + (connector === '├─ ' ? '│  ' : connector ? '   ' : '');
-      rows.push({ text: `${indent}  Task: ${run.task}`, color: 'dim' });
+      rows.push({ text: `${indent}  Task: ${run.task}`, color: 'text' });
       if (open) {
         rows.push({ text: `${indent}  ${run.model} · thinking ${run.thinking} · ${run.turns} requests · ${run.context ?? 'fresh'} context`, color: 'dim' });
         rows.push({ text: `${indent}  Conversation: ${tokens(run.tokens)} tokens · $${run.cost.toFixed(4)}${run.parentChildId ? ` · parent #${run.parentChildId}${run.parentRun ? ` task ${run.parentRun}` : ''}` : ''}`, color: 'dim' });
@@ -87,9 +87,12 @@ export class SubagentBrowser implements Component {
     for (const category of categories) {
       const group = trees.filter(tree => taskCategory(tree) === category);
       if (!group.length) continue;
-      rows.push({ key: `group:${category}`, category, color: category === 'Needs attention' ? 'error' : 'accent',
+      rows.push({ key: `group:${category}`, category, color: category === 'Needs attention' ? 'error' : category === 'Completed' ? 'success' : category === 'Cancelled' ? 'muted' : 'accent',
         text: `${this.collapsed.has(category) ? '▸' : '▾'} ${category} · ${group.length} ${group.length === 1 ? 'task' : 'tasks'} · ${group.flatMap(flatten).length} agents` });
-      if (!this.collapsed.has(category)) for (const tree of group) add(tree, '  ', '');
+      if (!this.collapsed.has(category)) group.forEach((tree, index) => {
+        add(tree, '  ', '');
+        if (index < group.length - 1) rows.push({ text: '' });
+      });
       rows.push({ text: '' });
     }
     if (!trees.length) rows.push({ text: 'No subagents yet. Ask the parent to delegate a task.', color: 'dim' }, { text: '' });
@@ -117,7 +120,8 @@ export class SubagentBrowser implements Component {
     else if (matchesKey(data, Key.pageDown)) this.selected = items[Math.min(items.length - 1, index + Math.max(1, Math.floor(height / 2)))]?.key ?? '';
     else if (matchesKey(data, Key.home)) this.selected = items[0]?.key ?? '';
     else if (matchesKey(data, Key.end)) this.selected = items.at(-1)?.key ?? '';
-    else if (data === 't' && current?.run) this.done(current.run.id);
+    else if ((data === 't' || matchesKey(data, Key.enter)) && current?.run) this.done(current.run.id);
+    else if ((data === 's' || data === 'S') && current?.run) this.done(`steer:${current.run.id}`);
     else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right) || matchesKey(data, Key.left) || data === ' ') {
       const collapse = matchesKey(data, Key.left), expand = matchesKey(data, Key.right);
       if (current?.action && matchesKey(data, Key.enter)) this.done(current.action);
@@ -144,13 +148,20 @@ export class SubagentBrowser implements Component {
     const visible = rows.slice(this.offset, this.offset + height).map(row => {
       const safe = stripTerminalSequences(row.text).replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
       const text = `${row.key === this.selected ? '→ ' : '  '}${safe}`;
-      const content = truncateToWidth(text, width);
-      return this.theme.fg(row.key === this.selected ? 'accent' : row.color ?? 'dim', content);
+      let content: string;
+      if (row.run) {
+        const marker = ` · ${row.run.status}`, at = text.indexOf(marker);
+        content = this.theme.fg('text', this.theme.bold(text.slice(0, at))) + this.theme.fg(row.color ?? 'muted', marker) + this.theme.fg('muted', text.slice(at + marker.length));
+      } else if (row.category) content = this.theme.bold(this.theme.fg(row.color ?? 'accent', text));
+      else content = this.theme.fg(row.color ?? 'muted', text);
+      content = truncateToWidth(content, width);
+      return row.key === this.selected ? this.theme.bg('selectedBg', content + ' '.repeat(Math.max(0, width - visibleWidth(content)))) : content;
     });
     const range = rows.length > height ? ` · ${this.offset + 1}–${Math.min(rows.length, this.offset + height)}/${rows.length}` : '';
-    return [this.theme.fg('accent', truncateToWidth(heading, width)),
-      this.theme.fg('dim', truncateToWidth('Task trees · # is the persistent child ID · usage totals per conversation', width)), ...visible,
-      this.theme.fg('dim', truncateToWidth(`↑↓ navigate · Enter/←→ details · t transcript · Esc/Shift+← close${range}`, width))];
+    return [this.theme.bold(this.theme.fg('text', truncateToWidth(heading, width))),
+      this.theme.fg('borderAccent', '─'.repeat(width)), ...visible,
+      this.theme.fg('borderAccent', '─'.repeat(width)),
+      this.theme.fg('muted', truncateToWidth(`↑↓ navigate · Enter chat · → details · S steer · Esc back${range}`, width))];
   }
   invalidate(): void {}
   dispose(): void { this.disposed = true; clearInterval(this.timer); }

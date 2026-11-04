@@ -11,7 +11,7 @@ export function oneLine(value: string): string {
 export function formatSubagentStatus(runs: RunSnapshot[]): string | undefined {
   const active = runs.filter(isRunning);
   if (!active.length) return undefined;
-  return `Subagents ${active.length} · Shift+←`;
+  return `Subagents ${active.length}`;
 }
 
 export const SUBAGENT_SHORTCUT = 'shift+left';
