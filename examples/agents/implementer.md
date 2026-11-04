@@ -4,8 +4,6 @@ description: Implement changes in files assigned by the parent.
 permissions: edit
 context: fork
 isolation: worktree
-model: current
-thinking: high
 ---
 
 Work on the assigned files. Preserve other agents' changes.

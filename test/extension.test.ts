@@ -507,6 +507,27 @@ test('results completed during compaction are delivered once when the parent bec
   } finally { await h.cleanup(); }
 });
 
+test('runtime model and effort overrides leave the named agent permission policy unchanged', async () => {
+  const h = await harness();
+  try {
+    const reasoning = fauxProvider({ provider: 'reasoning-fixture', models: [{ id: 'local', reasoning: true }], tokensPerSecond: Infinity });
+    h.models.registerNativeProvider(reasoning.provider);
+    await mkdir(join(h.agentDir, 'agents'), { recursive: true });
+    await writeFile(join(h.agentDir, 'agents', 'inspect.md'), '---\nname: inspect\ndescription: Inspect assigned files.\npermissions: read-only\ntools: [read]\nmodel: reasoning-fixture/local\nthinking: high\n---\nInspect the assigned files.');
+    h.faux.setResponses([answer('Lower effort task')]); reasoning.setResponses([answer('Higher effort task')]);
+    const light = await h.tool({ action: 'spawn', agent: 'inspect', task: 'Find a file', model: 'current', thinking: 'off' });
+    expect(light.isError).not.toBe(true);
+    const lightId = light.details.runs[0].id; await h.runtime.wait(lightId, 3000);
+    const deep = await h.tool({ action: 'spawn', agent: 'inspect', task: 'Trace interactions' });
+    expect(deep.isError).not.toBe(true);
+    const deepId = deep.details.runs[0].id; await h.runtime.wait(deepId, 3000);
+    const a = await h.runtime.saved(lightId), b = await h.runtime.saved(deepId);
+    expect(a.model).toBe('faux/faux-1'); expect(a.thinking).toBe('off');
+    expect(b.model).toBe('reasoning-fixture/local'); expect(b.thinking).toBe('high');
+    expect(a.policy).toEqual(b.policy); expect(a.tools).toEqual(['read']);
+  } finally { await h.cleanup(); }
+});
+
 test('parent result metadata clips child output but the saved child keeps the full result', async () => {
   const h = await harness(true);
   try {

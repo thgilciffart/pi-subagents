@@ -129,8 +129,6 @@ description: Review assigned files without commands or inherited capabilities.
 trust: untrusted
 permissions: read-only
 tools: [read, grep, find, ls]
-model: current
-thinking: high
 ---
 Review the assigned files. Return actionable findings with file references.
 ```
@@ -140,6 +138,15 @@ Review the assigned files. Return actionable findings with file references.
 Definitions also accept the capability fields above, `context: fresh|fork`, `isolation: shared|worktree`, and supported Pi `thinking` levels. `tools` accepts a YAML list or comma-separated names. When `permissions` is omitted, tools determine the profile, otherwise it defaults to `read-only`. Omitting `tools` on an untrusted definition defaults to no tools; the parent can supply a list within its profile. An explicit definition list sets the maximum built-in tool set, and `tools: []` sets that maximum to none. External runners, arbitrary child extensions, symbolic-link definitions, and `.chain.md` files are excluded.
 
 Model selection follows the launch value, definition, global subagent settings, then parent model. `current` resolves to the parent model. Thinking follows the same order, using a supported parent level when inherited. Unsupported explicit settings fail. The resolved model must remain in the parent's configured scope. Configured providers, authentication, and virtual-model routing use the parent Pi runtime.
+
+`model` and `thinking` are optional YAML defaults. The parent can choose both for each new child based on the task. For example, these launches keep the same read-only `Explore` permissions:
+
+```json
+{"action":"spawn","agent":"Explore","task":"Find the configuration entry point.","model":"current","thinking":"low"}
+{"action":"spawn","agent":"Explore","task":"Trace the recovery state machine and identify race conditions.","model":"current","thinking":"high"}
+```
+
+The parent can replace `current` with a configured `provider/model-id`. Omit both fields to use the resolved defaults. Each child saves its resolved model and thinking level for follow-ups and recovery.
 
 Examples: [implementer](examples/agents/implementer.md), [command runner](examples/agents/runner.md), and [untrusted reviewer](examples/agents/limited-reviewer.md).
 
