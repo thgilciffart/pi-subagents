@@ -52,7 +52,14 @@ export function chatItems(entries: EntryRecord[], inherited = false): ChatItem[]
 type Steer = (text: string, requestId: string, expectedRun: number) => Promise<void>;
 
 export class SubagentChat implements Component {
-  focused = true;
+  private hasFocus = true;
+  get focused(): boolean { return this.hasFocus; }
+  set focused(value: boolean) {
+    if (this.hasFocus === value) return;
+    this.hasFocus = value;
+    this.input.focused = value;
+    if (!this.disposed) this.requestRender();
+  }
   private offset = 0;
   private viewportHeight = 1;
   private follow = true;
@@ -142,7 +149,8 @@ export class SubagentChat implements Component {
     }
     const imported = this.snapshot.entries.filter(entry => entry.kind === 'pi-subagents.fork').length;
     if (imported && !this.showInherited) lines.push(this.theme.fg('muted', `  ${imported} inherited context entries hidden · I to show`), '');
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
+      if (index) lines.push('', this.theme.fg('borderMuted', '  ' + '─'.repeat(Math.max(0, width - 4))), '');
       const tool = item.role === 'tool';
       const color = tool ? item.error ? 'error' : item.pending ? 'warning' : 'success' : item.role === 'assistant' ? 'accent' : item.role === 'steering' ? 'warning' : 'userMessageText';
       const label = oneLine(tool ? `${item.pending ? '◌' : item.error ? '✗' : '✓'} ${item.label}` : item.role === 'assistant' ? this.snapshot.run.agent : item.label);
@@ -160,15 +168,14 @@ export class SubagentChat implements Component {
         }
         for (const line of cached.rows) lines.push(`  ${tool ? this.theme.fg(item.error ? 'error' : 'muted', line) : line}`);
       }
-      lines.push('');
-      lines.push(this.theme.fg('borderMuted', '  ' + '─'.repeat(Math.max(0, width - 4))));
-      lines.push('');
     }
     if (!items.length) lines.push(this.theme.fg('muted', '  Waiting for saved conversation messages…'));
     return lines.map(line => truncateToWidth(line, width));
   }
   render(width: number): string[] {
-    if (width < 1) return [];
+    // Leave the overlay registered so Pi can restore focus after the other dialog closes.
+    // Rendering no rows reveals that dialog without interfering with its input or focus.
+    if (width < 1 || !this.focused) return [];
     const run = this.snapshot.run, color = isRunning(run) ? 'accent' : run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : 'muted';
     const header = this.theme.bold(this.theme.fg('text', ` ${oneLine(run.agent)} #${oneLine(run.id)}`)) + this.theme.fg(color, `  ${oneLine(run.status)}`);
     const meta = ` ${oneLine(`${run.model} · thinking ${run.thinking} · ${run.toolCalls} tool calls · task ${run.run}`)}`;
@@ -183,9 +190,11 @@ export class SubagentChat implements Component {
     } else bottom.push(this.theme.fg('muted', truncateToWidth(` ↑↓ scroll · End latest · O tool output · I inherited${run.status === 'running' ? ' · S steer' : ''} · Esc back`, width)));
     const rows = Math.max(1, this.rows());
     const border = this.theme.fg('borderAccent', '─'.repeat(width));
-    const footer = [border, ...bottom].slice(-rows);
+    const footerLimit = Math.max(1, rows - 1);
+    if (bottom.length > footerLimit && (this.failure || this.loadFailure || this.notice)) bottom.splice(1, 1);
+    const footer = [border, ...bottom].slice(-footerLimit);
     const top = [truncateToWidth(header, width), this.theme.fg('muted', truncateToWidth(meta, width)), border]
-      .slice(0, Math.max(0, rows - footer.length));
+      .slice(0, Math.max(0, rows - footer.length - 1));
     const height = Math.max(0, rows - top.length - footer.length);
     this.viewportHeight = height;
     const maxOffset = Math.max(0, body.length - height);

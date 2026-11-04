@@ -220,6 +220,8 @@ Detailed reads and live refresh stop when the browser closes. Outside it, the fo
 
 The child chat fills the terminal and keeps its controls at the bottom. It displays parent messages, assistant Markdown, and tool calls as separate blocks. System prompts and internal checkpoint records are hidden. Tool output starts collapsed; press `O` to expand it. Press `I` to show inherited parent context. Use Up, Down, Page Up, and Page Down to scroll, Home for the start, and End to follow new messages.
 
+When another Pi prompt takes focus, the chat disappears so you can see and answer that prompt. The chat returns when Pi restores its focus. Terminals with Kitty or iTerm2 image support use an inline chat because Pi preserves transcript images over full-screen overlays.
+
 Press `S` from a selected browser row or inside the chat to compose direction for a running child. Enter sends it; Escape leaves the composer and keeps the unsent draft. The message stays in the same task and conversation and reaches the child at its next model or tool boundary. Queued directions are visible before that boundary. During a send, Escape leaves the chat while the submitted direction continues. User steering does not grant tools or change the child's model or trust policy.
 
 The task number is checked when the direction is saved. If the child finishes or starts another task while you type, sending fails and retains the draft. Uncertain retries reuse a request key. Children must be running before this composer can send direction. Completed, failed, cancelled, and closed tasks do not restart from this composer. Use the parent for a new task. Escape leaves the chat and restores your parent draft.

@@ -4,7 +4,7 @@ import { NativeMcpBridge } from './mcp.ts';
 import { join } from 'node:path';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { convertToLlm, getAgentDir, loadProjectContextFiles, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { Text } from '@earendil-works/pi-tui';
+import { getCapabilities, Text } from '@earendil-works/pi-tui';
 import { Type, type Static } from 'typebox';
 import { discoverAgents, THINKING_LEVELS, type Thinking } from './agents.ts';
 import { readSubagentSettings, writeSubagentSettings } from './config.ts';
@@ -271,11 +271,13 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
           await inspect(context, `Subagent ${target}`, `${runSummary(run)}\n\n${run.output || run.error || run.task}\n\n${await owner.transcript(target)}`);
         } else {
           const snapshot = await owner.chatSnapshot(target);
+          // Pi preserves base image rows under overlays. An inline dialog avoids covering them.
+          const overlay = !getCapabilities().images;
           await context.ui.custom<void>((tui, theme, _keys, done) => new SubagentChat(snapshot, () => owner.chatSnapshot(target),
             async (text, requestId, expectedRun) => {
               await owner.steer(target, text, requestId, JSON.stringify({ source: 'user', id: target, run: expectedRun, task: text }), expectedRun, 'user');
-            }, theme, () => done(), () => tui.requestRender(), () => tui.terminal.rows, action === 'steer'),
-          { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 } });
+            }, theme, () => done(), () => tui.requestRender(), () => overlay ? tui.terminal.rows : Math.max(1, tui.terminal.rows - 6), action === 'steer'),
+          overlay ? { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 } } : undefined);
         }
       } else if (!context.hasUI) context.ui.notify((await owner.list()).map(runSummary).join('\n') || 'No subagents.', 'info');
       else {

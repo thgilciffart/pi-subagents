@@ -1,13 +1,14 @@
 import { expect, test, vi } from 'vitest';
 import { initTheme, type Theme } from '@earendil-works/pi-coding-agent';
-import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
+import { Container, Input, Text, TuiMainScreen, stripTerminalSequences, visibleWidth, type OverlayHandle, type Terminal } from '@earendil-works/pi-tui';
 import type { EntryRecord } from '@earendil-works/pi-durable';
 import { fauxAssistantMessage as answer, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { chatItems, SubagentChat } from '../src/chat.ts';
+import { SubagentBrowser } from '../src/browser.ts';
 import type { ChildChatSnapshot } from '../src/runtime.ts';
 
 initTheme('dark', false);
-const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
+const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
 const entry = (id: number, message: unknown, kind = 'pi.user') => ({ id, conversationId: 9, kind, model: [message] }) as unknown as EntryRecord;
 const user = (text: string) => ({ role: 'user', content: text, timestamp: 1 });
 const result = (text: string) => ({ role: 'toolResult', toolCallId: 'read', toolName: 'read', content: [{ type: 'text', text }], isError: false, timestamp: 1 });
@@ -19,6 +20,77 @@ const snapshot = (status = 'running'): ChildChatSnapshot => ({ run: { id: '9', a
     entry(4, result('LARGE_TOOL_OUTPUT\n'.repeat(50)), 'pi.tool'),
     entry(5, answer('## Findings\n\nReadable **assistant** evidence.\n\n- One finding\n- Another finding'), 'pi.assistant')] });
 const rendered = (chat: SubagentChat, width = 100) => chat.render(width).map(stripTerminalSequences).join('\n');
+
+test('a real TUI reveals parent prompts and returns through the chat and browser to the parent draft', () => {
+  let send!: (data: string) => void;
+  const terminal: Terminal = { rows: 12, columns: 120, kittyProtocolActive: false,
+    start: onInput => { send = onInput; }, stop() {}, async drainInput() {}, write() {}, moveBy() {}, hideCursor() {}, showCursor() {},
+    clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {} };
+  const tui = new TuiMainScreen(terminal, true), slot = new Container(), draft = new Input();
+  draft.setValue('Keep my parent draft');
+  tui.addChild(new Text('Parent conversation', 0, 0)); tui.addChild(slot); tui.addChild(new Text('Parent footer', 0, 0));
+  slot.addChild(draft); tui.setFocus(draft);
+  const view = snapshot();
+  let browser: SubagentBrowser | undefined, chat: SubagentChat | undefined, handle: OverlayHandle | undefined;
+  const frame = () => { tui.renderNow(); return tui.captureRenderState().previousLines.slice(-terminal.rows).map(stripTerminalSequences).join('\n'); };
+  const restoreDraft = () => { slot.clear(); slot.addChild(draft); tui.setFocus(draft); };
+  const openBrowser = () => {
+    browser = new SubagentBrowser([view.run], async () => [view.run], theme, id => {
+      browser?.dispose(); restoreDraft();
+      if (id) {
+        chat = new SubagentChat(view, async () => view, async () => {}, theme,
+          () => { handle?.hide(); chat?.dispose(); openBrowser(); }, () => tui.requestRender(), () => terminal.rows);
+        handle = tui.showOverlay(chat, { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 });
+      }
+    }, () => tui.requestRender(), () => terminal.rows);
+    slot.clear(); slot.addChild(browser); tui.setFocus(browser);
+  };
+  tui.start();
+  try {
+    openBrowser(); send('\r');
+    expect(frame()).toContain('Explore #9'); expect(chat?.focused).toBe(true);
+    send('S'); send('Child draft héllo');
+    expect(frame()).toContain('Child draft héllo');
+    expect(tui.captureRenderState().hardwareCursorRow).toBe(terminal.rows - 1);
+    let answer = '';
+    const question = new Input({ prompt: 'Approve parent action? ' });
+    question.onSubmit = value => { answer = value; restoreDraft(); };
+    slot.clear(); slot.addChild(question); tui.setFocus(question);
+    expect(chat?.focused).toBe(false);
+    const waiting = frame();
+    expect(waiting).toContain('Approve parent action?'); expect(waiting).not.toContain('Explore #9');
+    send('No'); send('\r');
+    expect(answer).toBe('No'); expect(chat?.focused).toBe(true);
+    expect(frame()).toContain('Explore #9');
+    expect(frame()).toContain('Child draft héllo');
+    send('\x1b');
+    expect(frame()).toContain('Explore #9');
+    send('\x1b');
+    expect(frame()).toContain('Enter chat'); expect(tui.getFocusedComponent()).toBe(browser);
+    send('\x1b');
+    expect(tui.getFocusedComponent()).toBe(draft);
+    expect(frame()).toContain('Keep my parent draft');
+    expect(draft.getValue()).toBe('Keep my parent draft');
+    expect(tui.hasOverlay()).toBe(false);
+  } finally { handle?.hide(); chat?.dispose(); browser?.dispose(); tui.stop(); }
+});
+
+test('short terminals drop header details before hiding conversation text', () => {
+  const view = snapshot('completed'); let rows = 5;
+  view.entries = [entry(1, answer('Saved reply'))];
+  const chat = new SubagentChat(view, async () => view, async () => {}, theme, () => {}, () => {}, () => rows);
+  try {
+    for (rows of [7, 6, 5, 4, 3, 2]) {
+      expect(chat.render(100)).toHaveLength(rows);
+      expect(rendered(chat)).toContain('Saved reply');
+    }
+    view.run.status = 'running'; chat.handleInput('S');
+    for (rows of [7, 6, 5, 4, 3, 2]) {
+      expect(chat.render(100)).toHaveLength(rows);
+      expect(rendered(chat)).toContain('Saved reply');
+    }
+  } finally { chat.dispose(); }
+});
 
 test('short and long chats fill the terminal and keep controls at the bottom after resize', () => {
   const view = snapshot('completed'); let rows = 32;
@@ -56,6 +128,24 @@ test('page scrolling uses the full chat viewport', () => {
     expect(next[0]).toContain('Message row 18');
     chat.handleInput('\x1b[5~');
     expect(chat.render(80).map(stripTerminalSequences).slice(3, -2)).toEqual(first);
+  } finally { chat.dispose(); }
+});
+
+test('resizing a scrolled chat preserves its position and uses the new page height', () => {
+  const view = snapshot('completed'); let rows = 24;
+  view.entries = [entry(1, answer(Array.from({ length: 100 }, (_, index) => `Message row ${index}`).join('\n')))];
+  const chat = new SubagentChat(view, async () => view, async () => {}, theme, () => {}, () => {}, () => rows);
+  const content = () => chat.render(80).map(stripTerminalSequences).slice(3, -2);
+  try {
+    chat.handleInput('\x1b[H'); content();
+    chat.handleInput('\x1b[B'); chat.handleInput('\x1b[B');
+    expect(content()[0]).toContain('Message row 1');
+    rows = 12;
+    expect(content()).toHaveLength(7); expect(content()[0]).toContain('Message row 1');
+    chat.handleInput('\x1b[6~'); expect(content()[0]).toContain('Message row 8');
+    chat.handleInput('\x1b[5~'); expect(content()[0]).toContain('Message row 1');
+    rows = 150;
+    expect(content()[0]).toContain('Explore'); expect(content()[1]).toContain('Message row 0');
   } finally { chat.dispose(); }
 });
 

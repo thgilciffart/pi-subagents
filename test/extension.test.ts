@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createEventBus, ModelRuntime, ModelRegistry, SessionManager, initTheme } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, fauxAssistantMessage as answer } from '@earendil-works/pi-ai/providers/faux';
-import { visibleWidth } from '@earendil-works/pi-tui';
+import { getCapabilities, setCapabilities, visibleWidth } from '@earendil-works/pi-tui';
 import subagents from '../src/index.ts';
 import type { SubagentRuntime } from '../src/runtime.ts';
 import { RESULT_MESSAGE } from '../src/receipts.ts';
@@ -353,6 +353,22 @@ test('a saved child chat opens across the full terminal after reload', async () 
     expect(h.customViews.at(-1).at(-1)).toContain('Esc back');
     expect(h.editor.getText()).toBe('Keep the parent draft');
   } finally { await h.cleanup(); }
+});
+
+test('image-capable terminals use an inline child chat instead of covering transcript images', async () => {
+  const capabilities = getCapabilities(), h = await harness();
+  try {
+    h.faux.setResponses([answer('Image terminal reply')]);
+    const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect image terminal' });
+    await h.runtime.wait(spawned.details.runs[0].id, 3000);
+    for (const images of ['kitty', 'iterm2'] as const) {
+      setCapabilities({ ...capabilities, images });
+      await h.commands.get('agents').handler(spawned.details.runs[0].id, h.context);
+      expect(h.customOptions.at(-1)).toBeUndefined();
+      expect(h.customViews.at(-1)).toHaveLength(26);
+      expect(h.customViews.at(-1).join('\n')).toContain('Image terminal reply');
+    }
+  } finally { setCapabilities(capabilities); await h.cleanup(); }
 });
 
 test('non-terminal child inspection keeps the saved transcript available as text', async () => {
