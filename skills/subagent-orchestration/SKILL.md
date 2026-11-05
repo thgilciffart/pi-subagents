@@ -1,111 +1,88 @@
 ---
 name: subagent-orchestration
-description: Decide whether and how to delegate work through the subagent tool, then steer, recover, and verify the children. Use when splitting a task across subagents, choosing a child's agent, model, effort, permissions, workspace, or context, or managing children that already exist.
+description: Decide whether and how to delegate through the subagent tool, then steer, recover, and verify children. Use when splitting work across subagents, choosing a child's agent, model, effort, permissions, workspace, or context, or managing existing children.
 ---
 
 # Subagent orchestration
 
-This skill helps you use the `subagent` tool well. It does not authorize delegation. Delegate when the user or the instructions you already follow allow it, and stay inside the scope the user set. The tool enforces permissions, request deduplication, and recovery rules. These notes cover the choices it leaves to you.
-
-The guidance below describes the main parent's API. If you are a child, read **Delegate from a child** for the narrower API before making calls.
+This skill does not authorize delegation. Delegate only when the user or your current instructions allow it, and stay within the user's scope. The tool enforces permissions, deduplication, and recovery. This skill covers the choices it leaves to you. If you are a child, read "Delegate from a child" before making calls.
 
 ## Decide whether to delegate
 
-Do the work yourself when it is small, when it depends on the conversation you already hold, or when each step needs the result of the one before. A child starts without your reasoning, so a short task can cost more to brief than to do.
+Do small tasks, dependent steps, and work that needs your conversation yourself. Delegate when parts can run in parallel, when a broad search would fill your context, when a review needs an agent without your assumptions, or when an experiment needs its own checkout.
 
-Delegation helps in these cases:
+## Choose agent, model, effort, and permissions
 
-- The work splits into parts that don't depend on each other and can run at the same time.
-- A broad search or long investigation would fill your context with material you need only as a summary.
-- A review should come from an agent that doesn't share your assumptions.
-- An experimental edit should happen in a separate checkout.
+Call `list` when choosing a custom agent, model, or effort, or when unsure what is available. The main parent's list shows agents and their permission ceilings, configured models and their thinking levels, and available skills, MCP tools, and hooks. Pick from that output, and don't assume a provider or model name.
 
-## Choose the agent, model, effort, and permissions
+- `Explore` and `Plan` are read-only. `general-purpose` has full access, including `bash`. Custom agents can fall between them.
+- Use the model and effort the user asked for. Otherwise, choose them per launch by task difficulty, such as `thinking: "low"` to find a file and `"high"` to trace a race. `model: "current"` uses your model. Omit both for the defaults. An unsupported explicit thinking level fails the spawn.
+- Grant the least access that works. `tools` narrows the built-in tools and `disabledTools` removes some. `trust: "untrusted"` starts with nothing, so pass exact `tools`, `skills`, `mcpTools`, and `hooks` lists.
+- Trusted children see parent skills by name and load them on demand. Use `disabledSkills` or `skills: []` to remove skills the task doesn't need.
 
-Run `subagent` with `action: "list"` when choosing a custom agent, model, or effort, or when you are unsure what is available. The main parent's list returns agent definitions and permission ceilings, configured models and supported thinking levels, and available skills, MCP tools, and hooks. Choose from that output. Don't assume a provider or model name.
-
-- Pick the named agent by the permissions the task needs. The built-in `Explore` and `Plan` agents are read-only. `general-purpose` has full permissions, including `bash`. Custom definitions in the `list` output can fall between them.
-- Use the model or effort the user specified. Otherwise, choose `model` and `thinking` for each launch based on the task's difficulty. Finding a configuration entry point suits `thinking: "low"`. Tracing a race condition or reviewing a subtle change suits `"high"`. `model: "current"` uses your model. Omit both fields to use the definition or settings defaults. An explicit thinking level that the selected model doesn't support fails the spawn.
-- Give the child the least access that lets it finish. Pass `tools` for a narrower built-in tool list, or `disabledTools` to remove one, such as `bash` for an edit that needs no commands. Pass `trust: "untrusted"` with exact `tools`, `skills`, `mcpTools`, and `hooks` lists when the child should start with nothing.
-- Trusted children see parent skills by name and load them on demand. Pass `disabledSkills` to remove named skills, or `skills: []` to remove them all, when the task doesn't need them.
-
-Each child saves its resolved model, thinking level, and permissions. `send`, `steer`, and recovery reuse them, and settings changes affect only new children. To run the same work with a different model or effort, spawn a new child.
+A child keeps its resolved model, effort, and permissions for `send`, `steer`, and recovery. Settings changes affect only new children. Spawn a new child to change the model or effort.
 
 ## Write a self-contained task
 
-A fresh child knows its role instructions, the project instruction files, and the `task` text. It doesn't see your conversation. Put these in the task:
+A fresh child sees its role instructions, the project instruction files, and `task`, but not your conversation. Include the goal and known facts, the files it owns and must leave alone, the result format and evidence to return, and the user's constraints. Children can't ask the user, so say whether to stop and report or proceed on a stated assumption when a decision is missing.
 
-- The goal, with the facts you already found: file paths, symbols, error text, and decisions the user made.
-- What the child owns: the files or directories it may change and what it must leave alone. For read-only work, state the question to answer.
-- The expected result: its format, the evidence to include, such as file references, commands run, and test output, and when to stop.
-- The user's constraints, such as no commits or no new dependencies.
+## Run work in parallel
 
-Children don't talk to the user. They return questions and blockers in their answer. Say what the child should do when a decision is missing: stop and report, or proceed on an assumption you state.
+Spawn independent children in one turn and keep working. Results arrive as follow-up messages. Call `wait` only when you need a result now. Each `wait` lasts at most 60 seconds and doesn't cancel the child.
 
-## Run independent work in parallel
+In a shared checkout, give each child separate files. Run tasks that change the same file in sequence, or put one in a worktree. Settle a shared interface before the children start.
 
-Spawn independent children one after another in the same turn, then continue your own work. Their results arrive automatically as follow-up messages. Call `wait` only when your next step needs a result now. One `wait` call lasts at most 60 seconds, and ending a wait doesn't cancel the child.
-
-In a shared checkout, give parallel children separate files to own. If two tasks must change the same file, run them in sequence, or move one into a worktree.
-
-If parallel parts depend on a shared interface, settle it first, yourself or with one owner. Give the other children that interface as fixed input.
-
-The `maxConcurrent` setting caps running tasks across the whole tree, including nested children. The limit is one pool for the whole tree. A child's own task and its running ancestors already use slots from it. A `spawn` or `send` over the limit fails instead of queuing. When that happens, wait for a child to finish or do the work yourself.
+`maxConcurrent` is one pool for the whole tree, and running ancestors use slots too. A `spawn` or `send` over the limit fails instead of queuing.
 
 ## Fit the pattern to the task
 
-For larger changes, a common sequence is explore, plan, implement, review, and verify. Use only the steps that earn their cost:
+Explore, plan, implement, review, and verify is a common order for large changes. Use only the steps that pay off. Do a small fix yourself or give it to one child. Send `Explore` children with one question each into an unfamiliar area.
 
-- For a small fix, do it yourself, or give one `general-purpose` child the fix and the checks to run.
-- For an unfamiliar area, start with one or more `Explore` children, each answering a separate question.
-- For a change with real design choices, ask `Plan` for a plan and read it. Resolve questions from the user's instructions and existing context. Ask the user about material decisions those sources don't settle.
-- For a broad change, split the implementation by file ownership. Then ask a fresh read-only child to review it. Put the diff, or the changed files and base commit, in its task. Read-only agents have no `bash` to generate a Git diff. Keep the task within its 50,000-character limit.
+Get a plan from `Plan` when the design has real choices. Ask the user only about material decisions that the instructions and context leave open.
 
-Pass the findings that matter from one step to the next, not whole transcripts.
+For a broad change, split implementation by file ownership, then ask a fresh read-only child to review. Read-only agents have no `bash`, so put the diff, or the changed files and base commit, in its task. A task holds at most 50,000 characters. Pass on findings, not transcripts.
 
 ## Choose a shared checkout or a worktree
 
-`isolation: "shared"` is the default. The child works in your checkout, sees your uncommitted edits, and its edits appear there at once. Use it for read-only work and for edits with clear ownership. Name the files other agents own so editing children can avoid conflicts.
+`isolation: "shared"` is the default. The child sees your uncommitted edits, and its edits appear in your checkout at once. Use it for reads and for edits with clear ownership.
 
-`isolation: "worktree"` creates a dedicated branch and checkout at the current `HEAD` under `.pi/subagents/worktrees/`. It requires a trusted Git project with at least one commit. The checkout has committed files only. Your uncommitted changes and untracked files are absent, so a child that needs them must use the shared checkout. Use a worktree for experimental edits or edits that would conflict with other work.
+`isolation: "worktree"` creates a branch and checkout at `HEAD` under `.pi/subagents/worktrees/`. It needs a trusted Git project with a commit. The checkout has committed files only, so a child that needs your uncommitted or untracked files must share your checkout.
 
-The plugin doesn't merge, commit, or delete worktrees, and cancellation or closure keeps the branch and files. When a worktree child finishes, `status` shows its branch and base commit. Review that diff and bring the wanted changes into your checkout without overwriting edits that are already there. Remove the branch and checkout as a separate, explicit step, and only when the user's instructions allow it.
+The plugin never merges, commits, or deletes a worktree, even after `cancel` or `close`. When the child finishes, `status` shows its branch and base commit. Review that diff and apply the wanted changes without overwriting edits in your checkout. Remove the branch and checkout only as a separate step that the user's instructions allow.
 
 ## Choose fresh or forked context
 
-`context: "fresh"` is the default. Use it when the task text can carry what the child needs. A fresh child reads less input and doesn't inherit your assumptions, which matters for reviews.
-
-Use `context: "fork"` when the child needs the conversation itself, such as requirements the user gave across many turns. A fork copies your model-visible conversation. The child keeps its own instructions and permissions, and imported tool calls never run again. Still state the child's job and ownership in `task`, because the copied history doesn't say which part belongs to the child.
+Use the default `context: "fresh"` when the task text carries enough. It costs less and keeps a review free of your assumptions. Use `context: "fork"` when the child needs the conversation itself. A fork copies your model-visible conversation. The child keeps its own instructions and permissions, and imported tool calls never run again. Still state its job and ownership in `task`.
 
 ## Track children by ID and request key
 
-`spawn` returns a persistent child ID. Use that ID for `send`, `steer`, `status`, `wait`, `result`, `transcript`, `cancel`, and `close`. IDs can have gaps and are not positions in a list.
+`spawn` returns a persistent child ID for all later actions. IDs can have gaps and aren't list positions.
 
-Give each `spawn`, `send`, and `steer` a stable `requestId` that names the work, such as `auth-trace` or `auth-review-2`. If the outcome of a call is uncertain, repeat it with the same `requestId` and the same arguments. The tool returns the original run instead of starting a duplicate. A new key starts new work, and reusing a key with different arguments fails.
+Give each `spawn`, `send`, and `steer` a stable `requestId` that names the work, such as `auth-review-2`. After an uncertain outcome, repeat the call with the same key and arguments to get the original run. A new key starts new work, and the same key with different arguments fails.
 
-- `steer` adds direction to a running task. The child reads it after its current model request or tool round. Use it to narrow scope or add a fact.
-- `send` gives an idle child a new task in the same conversation. Use it for follow-ups that build on what the child already learned, or for a new attempt after a failure or cancellation.
-- `resume` recovers unfinished work after a reload or a paused recovery. It doesn't restart completed, failed, cancelled, or closed tasks.
-- `cancel` stops the active task. `close` ends the child permanently and keeps its history.
+- `steer` adds direction to a running task after its current model request or tool round.
+- `send` gives an idle child a new task in the same conversation, including after a failure or cancellation.
+- `resume` recovers unfinished work after a reload or pause. It doesn't restart completed, failed, cancelled, or closed tasks.
+- `cancel` stops the active task. `close` ends the child for good and keeps its history.
 
 ## Recover without repeating uncertain writes
 
-After a crash or reload of the same parent chat, children keep their IDs, conversations, settings, and pending results. Call `status` before acting. A task paused on model scope, model availability, project trust, or capabilities continues after you restore that access and call `resume`.
+After a crash or reload of the same parent chat, children keep their IDs, conversations, settings, and pending results. Call `status` first. A task paused on model scope, model availability, project trust, or capabilities continues after you restore access and call `resume`.
 
-Interrupted reads replay. An interrupted write, edit, command, or MCP call returns an interruption result instead, because its effects may already exist. Read the child's `transcript` to find the interrupted call. If the child hasn't already checked its effect, inspect the files, the Git state, or the external system. Then `steer` a running child or `send` to a finished one with what you found. Don't repeat the operation yourself until you know its effect.
+Interrupted reads replay. An interrupted write, edit, command, or MCP call returns an interruption result instead, because its effect may already exist. Find the call in the `transcript`. If the child hasn't checked its effect, inspect the files, Git, or the external system. Pass what you found with `steer` or `send`. Don't repeat the operation until you know its effect.
 
 ## Delegate from a child
 
-A child with the `subagent` tool can manage its own direct children with every action except `resume`. Nested `list` shows agent definitions and your children, but no model, thinking-level, or capability catalog.
+A child with the `subagent` tool manages only its direct children and has every action except `resume`. Its `list` shows agents and its children, with no model, thinking-level, or capability catalog.
 
-Nested `spawn` accepts only `agent`, `task`, `requestId`, `model`, `thinking`, `trust`, `context`, `tools`, `skills`, `mcpTools`, and `hooks`. There are no `disabled*` fields, `mcpServers`, or `isolation`. Nested children always use their immediate parent's checkout. Omitted `model` and `thinking` use the definition's values or your own saved values.
+Nested `spawn` accepts only `agent`, `task`, `requestId`, `model`, `thinking`, `trust`, `context`, `tools`, `skills`, `mcpTools`, and `hooks`. There are no `disabled*` fields, `mcpServers`, or `isolation`. Omitted `model` and `thinking` use the definition or your saved values. Nested children always use your checkout.
 
-The `tools`, `skills`, `mcpTools`, and `hooks` fields take explicit lists. Omitted selections inherit permitted capabilities from the immediate parent for trusted children. Untrusted children default to empty allowlists. To exclude skills, pass an explicit `skills` list, including `[]` to exclude all of them, or choose a definition with `disabledSkills`. A descendant never receives tools, trust, or a permission profile that its parent lacks. The `maxDepth` setting limits nesting, and the tool is absent at that depth.
+Capability fields take explicit lists. Omitted selections inherit permitted capabilities for trusted children. Untrusted children default to empty allowlists. To exclude skills, pass an explicit `skills` list, including `[]` for none, or use a definition with `disabledSkills`. A descendant never gets tools, trust, or permissions its parent lacks. The tool is absent at `maxDepth`.
 
-Nested results don't arrive automatically. They return only through the parent's `wait` and `result` calls. Collect the results you need before you finish, because finishing cancels unfinished descendants.
+Nested results arrive only through your `wait` and `result` calls. Collect them before you finish, because finishing cancels unfinished descendants.
 
 ## Handle questions and check results
 
-The main parent owns the user conversation. When a child reports a question, answer it from the user's instructions or existing context when those settle it. Ask the user only about material decisions that remain unresolved. Pass the answer with `send` to a finished child or `steer` to a running one. If you are a child, return unresolved questions to your parent.
+The main parent owns the user conversation. Answer a child's question from the user's instructions or context when they settle it, and ask the user only about material decisions left open. Reply with `steer` to a running child or `send` to a finished one. A child returns open questions to its parent.
 
-Treat a child's report as a claim. Before you call the work done, check it in proportion to the risk: read the diff, run the relevant tests, or open the cited code. Read the `transcript` when a result is surprising or incomplete. Report what you verified and what you didn't.
+Treat a child's report as a claim. Check it in proportion to the risk before you call the work done: read the diff, run the tests, or open the cited code. Read the `transcript` when a result looks wrong. Report what you verified and what you didn't.
