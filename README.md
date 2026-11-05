@@ -243,9 +243,15 @@ Browser refresh reuses transcript summaries until saved entries or task metadata
 
 ## Read and steer a child chat
 
-The child chat fills the terminal and keeps its controls at the bottom. It displays parent messages, assistant Markdown, and tool calls as separate blocks. System prompts and internal checkpoint records are hidden. Tool output starts collapsed; press `O` to expand it. Press `I` to show inherited parent context. Use Up, Down, Page Up, and Page Down to scroll, Home for the start, and End to follow new messages.
+The child chat fills the terminal and keeps its controls at the bottom. It displays parent messages, assistant Markdown, and tool calls as separate blocks. System prompts and internal checkpoint records are hidden. Tool output starts collapsed; press `O` to expand it. Press `I` to show inherited parent context. Scroll with the mouse wheel, Up, Down, Page Up, and Page Down. Home goes to the start. End, or scrolling down to the last line, follows new messages again.
 
-When another Pi prompt takes focus, the chat disappears so you can see and answer that prompt. The chat returns when Pi restores its focus. Terminals with Kitty or iTerm2 image support use an inline chat because Pi preserves transcript images over full-screen overlays.
+In Pi's fullscreen mode (`"tuiMode": "fullscreen"`, the default), the focused chat replaces Pi's whole screen layout. The parent transcript, editor, and footer return when the chat closes. The mouse wheel scrolls the chat, not the parent transcript. Click and drag still selects and copies text through Pi. The extension never changes terminal mouse modes; Pi's fullscreen renderer owns them.
+
+When another Pi prompt takes focus, the parent layout returns so you can see and answer that prompt. The chat returns at the same scroll position when Pi gives it focus again.
+
+In Pi's regular mode, Pi does not turn on mouse reporting, so the wheel scrolls the terminal's scrollback instead of the chat. Use the keys there. The chat covers the parent with a full-size overlay. Terminals with Kitty or iTerm2 image support use an inline chat instead, because Pi draws transcript images over overlays.
+
+Pi has no public way to read its fullscreen layout. The chat reads Pi's internal layout field and uses the regular-mode display if that field is missing. With Pi 1.4 in fullscreen mode on a Kitty or iTerm2 terminal, Pi keeps Page Up and Page Down for its own transcript, so use the wheel or Up and Down. Pi 1.5 sends those keys to the chat.
 
 Press `S` from a selected browser row or inside the chat to compose direction for a running child. Enter sends it; Escape leaves the composer and keeps the unsent draft. The message stays in the same task and conversation and reaches the child at its next model or tool boundary. Queued directions are visible before that boundary. During a send, Escape leaves the chat while the submitted direction continues. User steering does not grant tools or change the child's model or trust policy.
 
@@ -253,15 +259,15 @@ The task number is checked when the direction is saved. If the child finishes or
 
 ## Status indicator
 
-While children run, an animated `Subagents N` indicator appears on the right of the first footer line. It shows counts for thinking, tool use, startup, waiting, compaction, and paused recovery. The total includes nested children. A paused group stays still. Completion, failure, and cancellation appear briefly before the indicator clears. Saved results do not replay this feedback on reload.
+While children run, `Subagents N` appears on the right of the first footer line. N counts open children whose latest task is starting or running. The count includes nested children and children paused for recovery. Completed, failed, cancelled, and closed tasks are not counted. The indicator hides when N is zero.
 
-Animation uses cached activity summaries and stops when no child is working. Turn it off with Indicator animation in the extension's settings. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
+The indicator has no animation, activity breakdown, or completion message. Results arrive in the parent chat, and the task browser shows each child's activity. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
 
 This placement uses Pi's custom-footer slot. If another extension supplies your footer, set `indicatorPosition` to `"status"` to use the ordinary extension-status row instead. Change settings with `/agents config`. In either mode, Shift+Left opens the task browser whenever the text box has focus, whether empty or not. Your text stays intact. Alt+Left keeps the editor's word-navigation behavior.
 
 ## Settings
 
-Run `/agents config` or choose Edit settings in the task browser. The panel has searchable model and effort pickers, validated number fields, context and workspace choices, and indicator controls. Changes save automatically. Escape returns from a field or closes the panel after pending saves finish. Ctrl+U replaces the current number. Display changes apply immediately; existing children retain their saved execution settings. New children use these defaults unless the launch or definition overrides them.
+Run `/agents config` or choose Edit settings in the task browser. The panel has searchable model and effort pickers, validated number fields, context and workspace choices, and the indicator position. Changes save automatically. Escape returns from a field or closes the panel after pending saves finish. Ctrl+U replaces the current number. Display changes apply immediately; existing children retain their saved execution settings. New children use these defaults unless the launch or definition overrides them.
 
 Global defaults are stored at `<Pi agent directory>/subagents/settings.json`:
 
@@ -270,7 +276,6 @@ Global defaults are stored at `<Pi agent directory>/subagents/settings.json`:
 	"maxConcurrent": 4,
 	"maxDepth": 3,
 	"indicatorPosition": "footer-right",
-	"indicatorAnimation": true,
 	"maxTurns": 20,
 	"timeoutSeconds": 300,
 	"model": "current",
@@ -280,7 +285,7 @@ Global defaults are stored at `<Pi agent directory>/subagents/settings.json`:
 }
 ```
 
-`maxConcurrent` accepts 1 to 16 active tasks across the whole tree. `maxDepth` accepts 1 to 8 child layers. `indicatorPosition` accepts `footer-right` or `status`. `indicatorAnimation` enables motion while children work. `maxTurns` accepts 1 to 100 model-request attempts, including compaction and recovery. `timeoutSeconds` accepts 1 to 3,600 and includes downtime. Automatic provider retries are disabled.
+`maxConcurrent` accepts 1 to 16 active tasks across the whole tree. `maxDepth` accepts 1 to 8 child layers. `indicatorPosition` accepts `footer-right` or `status`. Files from earlier versions can contain `indicatorAnimation`. The extension ignores that key, and the next save removes it. `maxTurns` accepts 1 to 100 model-request attempts, including compaction and recovery. `timeoutSeconds` accepts 1 to 3,600 and includes downtime. Automatic provider retries are disabled.
 
 ## Compatibility and development
 

@@ -58,7 +58,6 @@ export default function subagents(pi: ExtensionAPI, options: {
   let ready: Promise<void> = Promise.resolve();
   let ownsFooter = false;
   function configureFooter(context: ExtensionContext, settings: SubagentSettings): void {
-    indicator.setAnimated(settings.indicatorAnimation && context.mode === 'tui' && context.hasUI);
     if (settings.indicatorPosition === 'footer-right' && context.hasUI && context.mode === 'tui') {
       context.ui.setFooter((tui, theme, data) => subagentFooter(() => ctx ?? context, data, theme, () => tui.requestRender(), () => pi.getSettings().compaction?.enabled !== false));
       ownsFooter = true;
@@ -72,15 +71,14 @@ export default function subagents(pi: ExtensionAPI, options: {
   let generation = 0;
   const pickerShortcut = editorPickerShortcut(context => command('', context), report);
   const indicator = new SubagentIndicator(text => {
-    const color = text?.startsWith('✗') ? 'error' : text?.startsWith('✓') ? 'success' : text?.includes('paused') ? 'warning' : 'accent';
-    ctx?.ui.setStatus('pi-subagents', text && ctx.mode === 'tui' && ctx.hasUI && ctx.ui.theme?.fg ? ctx.ui.theme.fg(color, text) : text);
+    ctx?.ui.setStatus('pi-subagents', text && ctx.mode === 'tui' && ctx.hasUI && ctx.ui.theme?.fg ? ctx.ui.theme.fg('accent', text) : text);
   });
 
   function report(error: unknown): void { ctx?.ui.notify(cleanText(error instanceof Error ? error.message : String(error)), 'error'); }
   function changed(): void {
     if (!runtime || !ctx) return;
     const owner = runtime;
-    void owner.indicatorRuns().then(runs => { if (runtime === owner) indicator.update(runs); }).catch(report);
+    void owner.list().then(runs => { if (runtime === owner) indicator.update(runs); }).catch(report);
     noticeTimer ??= setTimeout(() => { noticeTimer = undefined; void flush().catch(report); }, 50);
     noticeTimer.unref();
   }
@@ -309,13 +307,18 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
           await inspect(context, `Subagent ${target}`, `${runSummary(run)}\n\n${run.output || run.error || run.task}\n\n${await owner.transcript(target)}`);
         } else {
           const snapshot = await owner.chatSnapshot(target);
-          // Pi preserves base image rows under overlays. An inline dialog avoids covering them.
+          // On Pi's fullscreen renderer, the focused chat replaces the whole layout (SubagentChat.takeOverScreen),
+          // and the overlay or dialog below renders no rows. On the regular renderer, a full-size overlay covers
+          // the parent. Pi preserves base image rows under overlays, so image terminals use an inline dialog.
           const overlay = !getCapabilities().images;
-          await context.ui.custom<void>((tui, theme, _keys, done) => new SubagentChat(snapshot, () => owner.chatSnapshot(target),
-            async (text, requestId, expectedRun) => {
-              await owner.steer(target, text, requestId, JSON.stringify({ source: 'user', id: target, run: expectedRun, task: text }), expectedRun, 'user');
-            }, theme, () => done(), () => tui.requestRender(), () => overlay ? tui.terminal.rows : Math.max(1, tui.terminal.rows - 6), action === 'steer'),
-          overlay ? { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 } } : undefined);
+          await context.ui.custom<void>((tui, theme, _keys, done) => {
+            const chat = new SubagentChat(snapshot, () => owner.chatSnapshot(target),
+              async (text, requestId, expectedRun) => {
+                await owner.steer(target, text, requestId, JSON.stringify({ source: 'user', id: target, run: expectedRun, task: text }), expectedRun, 'user');
+              }, theme, () => done(), () => tui.requestRender(), () => overlay ? tui.terminal.rows : Math.max(1, tui.terminal.rows - 6), action === 'steer');
+            chat.takeOverScreen(tui);
+            return chat;
+          }, overlay ? { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 } } : undefined);
         }
       } else if (context.mode !== 'tui' || !context.hasUI) context.ui.notify(cleanText((await owner.list()).map(runSummary).join('\n')) || 'No subagents.', 'info');
       else {

@@ -4,42 +4,28 @@ import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux';
 import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
 import { editorPickerShortcut, formatSubagentStatus, footerRow, subagentFooter, SUBAGENT_SHORTCUT, SubagentIndicator } from '../src/ui.ts';
 
-test('the compact indicator uses Subagents and the picker shortcut', () => {
+test('the indicator shows only Subagents and the active count', () => {
   expect(SUBAGENT_SHORTCUT).toBe('shift+left');
-  expect(formatSubagentStatus([{ status: 'running' }, { status: 'completed' }] as any)).toBe('● Subagents 1 · working 1');
+  const runs = [{ status: 'running', activity: 'tool:read' }, { status: 'starting' }, { status: 'running', recoveryError: 'Trust required' },
+    { status: 'running', parentChildId: '1' }, { status: 'completed' }, { status: 'failed' }, { status: 'cancelled' }] as any;
+  expect(formatSubagentStatus(runs)).toBe('Subagents 4');
+  expect(formatSubagentStatus([{ status: 'completed' }] as any)).toBeUndefined();
   expect(formatSubagentStatus([])).toBeUndefined();
 });
 
-test('indicator animates cached activity, pauses, reports completion, and stops on disposal', () => {
+test('the indicator publishes count changes only, with no timers or completion flashes', () => {
   vi.useFakeTimers();
   const publish = vi.fn(), indicator = new SubagentIndicator(publish);
   const run = { id: '1', run: 1, receipt: 'parent:1:1', status: 'running', activity: 'thinking' } as any;
   try {
-    indicator.update([run]); const first = publish.mock.lastCall![0];
-    vi.advanceTimersByTime(120); expect(publish.mock.lastCall![0]).not.toBe(first);
-    expect(publish.mock.lastCall![0]).toContain('thinking 1');
-    indicator.update([{ ...run, activity: 'tool:read' }]); expect(publish.mock.lastCall![0]).toContain('tools 1');
-    indicator.setAnimated(false); const staticText = publish.mock.lastCall![0];
-    vi.advanceTimersByTime(600); expect(publish.mock.lastCall![0]).toBe(staticText);
-    indicator.setAnimated(true); indicator.update([{ ...run, recoveryError: 'Trust required' }]);
-    const calls = publish.mock.calls.length;
-    vi.advanceTimersByTime(600); expect(publish).toHaveBeenCalledTimes(calls);
-    expect(publish.mock.lastCall![0]).toContain('Ⅱ Subagents 1 · paused 1');
-    indicator.update([{ ...run, status: 'completed' }]); expect(publish.mock.lastCall![0]).toContain('✓ Subagents · 1 completed');
-    vi.advanceTimersByTime(3500); expect(publish.mock.lastCall![0]).toBeUndefined();
-    indicator.update([run]); indicator.dispose(); publish.mockClear();
-    vi.advanceTimersByTime(1000); expect(publish).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
-  } finally { indicator.dispose(); vi.useRealTimers(); }
-});
-
-test.each(['failed', 'cancelled'])('indicator briefly reports %s without replaying old results on load', status => {
-  vi.useFakeTimers(); const publish = vi.fn(), indicator = new SubagentIndicator(publish);
-  const run = { receipt: 'p:1:1', status } as any;
-  try {
-    indicator.update([run]); expect(publish.mock.lastCall![0]).toBeUndefined();
-    indicator.update([{ ...run, status: 'running' }]); indicator.update([run]);
-    expect(publish.mock.lastCall![0]).toContain(status);
-    vi.advanceTimersByTime(3500); expect(publish.mock.lastCall![0]).toBeUndefined();
+    indicator.update([run]); expect(publish.mock.calls).toEqual([['Subagents 1']]);
+    expect(vi.getTimerCount()).toBe(0);
+    indicator.update([{ ...run, activity: 'tool:read' }]); expect(publish).toHaveBeenCalledTimes(1);
+    indicator.update([run, { ...run, id: '2', receipt: 'parent:2:1' }]); expect(publish.mock.lastCall).toEqual(['Subagents 2']);
+    indicator.update([{ ...run, status: 'failed' }]); expect(publish.mock.lastCall).toEqual([undefined]);
+    vi.advanceTimersByTime(5000); expect(publish).toHaveBeenCalledTimes(3);
+    indicator.dispose(); indicator.update([]); expect(publish.mock.lastCall).toEqual([undefined]);
+    expect(vi.getTimerCount()).toBe(0);
   } finally { indicator.dispose(); vi.useRealTimers(); }
 });
 

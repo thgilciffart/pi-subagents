@@ -8,12 +8,11 @@ export type SettingsModel = { id: string; thinking: readonly Thinking[] };
 type Field = keyof SubagentSettings;
 type Choice = { value: string; label: string };
 const numeric = { maxConcurrent: 16, maxDepth: 8, maxTurns: 100, timeoutSeconds: 3600 } as const;
-const labels: Record<Field, string> = { indicatorPosition: 'Indicator position', indicatorAnimation: 'Indicator animation',
+const labels: Record<Field, string> = { indicatorPosition: 'Indicator position',
   model: 'Default model', thinking: 'Default thinking', context: 'Conversation context', isolation: 'Workspace',
   maxConcurrent: 'Parallel agents', maxDepth: 'Delegation depth', maxTurns: 'Model request limit', timeoutSeconds: 'Task timeout (seconds)' };
 const descriptions: Record<Field, string> = {
   indicatorPosition: 'Place the shared indicator at the right of the first footer line or in the extension status row.',
-  indicatorAnimation: 'Animate while agents work. Paused agents stay still; completion and failure appear briefly.',
   model: 'Default for new children. The parent can override this for each task. Agent definitions can set their own default.',
   thinking: 'Effort for new children. Inherit uses a supported parent level. Launch overrides take precedence.',
   context: 'Start with a fresh conversation or fork the parent model-visible history.',
@@ -116,7 +115,6 @@ export class SubagentSettingsEditor implements Component {
     }
     const options: Partial<Record<Field, Choice[]>> = {
       indicatorPosition: [{ value: 'footer-right', label: 'First footer line · right' }, { value: 'status', label: 'Extension status row' }],
-      indicatorAnimation: [{ value: 'true', label: 'Animated' }, { value: 'false', label: 'Static' }],
       context: [{ value: 'fresh', label: 'Fresh conversation' }, { value: 'fork', label: 'Fork parent context' }],
       isolation: [{ value: 'shared', label: 'Shared directory' }, { value: 'worktree', label: 'Isolated Git worktree' }],
     };
@@ -126,7 +124,7 @@ export class SubagentSettingsEditor implements Component {
   private change(id: string, value: string): void {
     this.submenus.clear();
     if (id !== 'save') {
-      this.draft = validateSubagentSettings({ ...this.draft, [id]: Object.hasOwn(numeric, id) ? Number(value) : id === 'indicatorAnimation' ? value === 'true' : value });
+      this.draft = validateSubagentSettings({ ...this.draft, [id]: Object.hasOwn(numeric, id) ? Number(value) : value });
       if (id === 'model' && !this.choices('thinking').some(choice => choice.value === this.draft.thinking)) this.draft.thinking = 'current';
       for (const item of this.items) if (item.id !== 'save') this.list.updateValue(item.id, this.display(item.id as Field));
     } else this.list.updateValue('save', 'Enter');

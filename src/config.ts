@@ -7,7 +7,6 @@ export type SubagentSettings = {
   maxConcurrent: number;
   maxDepth: number;
   indicatorPosition: 'footer-right' | 'status';
-  indicatorAnimation: boolean;
   maxTurns: number;
   timeoutSeconds: number;
   model: string;
@@ -16,7 +15,7 @@ export type SubagentSettings = {
   thinking: Thinking | 'current';
 }
 export const DEFAULT_SUBAGENT_SETTINGS: Readonly<SubagentSettings> = {
-  maxConcurrent: 4, maxDepth: 3, indicatorPosition: 'footer-right', indicatorAnimation: true, maxTurns: 20, timeoutSeconds: 300, model: 'current', thinking: 'current', isolation: 'shared', context: 'fresh',
+  maxConcurrent: 4, maxDepth: 3, indicatorPosition: 'footer-right', maxTurns: 20, timeoutSeconds: 300, model: 'current', thinking: 'current', isolation: 'shared', context: 'fresh',
 };
 
 export function validateSubagentSettings(value: unknown): SubagentSettings {
@@ -30,8 +29,7 @@ export function validateSubagentSettings(value: unknown): SubagentSettings {
   if (settings.isolation !== 'shared' && settings.isolation !== 'worktree') throw new Error('isolation must be shared or worktree.');
   if (settings.context !== 'fresh' && settings.context !== 'fork') throw new Error('context must be fresh or fork.');
   if (settings.indicatorPosition !== 'footer-right' && settings.indicatorPosition !== 'status') throw new Error('indicatorPosition must be footer-right or status.');
-  if (typeof settings.indicatorAnimation !== 'boolean') throw new Error('indicatorAnimation must be a boolean.');
-  return { indicatorPosition: settings.indicatorPosition, indicatorAnimation: settings.indicatorAnimation, maxDepth: settings.maxDepth, context: settings.context, isolation: settings.isolation, maxConcurrent: settings.maxConcurrent, maxTurns: settings.maxTurns, timeoutSeconds: settings.timeoutSeconds, model: settings.model, thinking: settings.thinking };
+  return { indicatorPosition: settings.indicatorPosition, maxDepth: settings.maxDepth, context: settings.context, isolation: settings.isolation, maxConcurrent: settings.maxConcurrent, maxTurns: settings.maxTurns, timeoutSeconds: settings.timeoutSeconds, model: settings.model, thinking: settings.thinking };
 }
 
 export async function readSubagentSettings(path: string): Promise<SubagentSettings> {

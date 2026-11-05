@@ -16,7 +16,6 @@ test('every setting is edited with pickers or a validated number input and saved
   const view = new SubagentSettingsEditor({ ...DEFAULT_SUBAGENT_SETTINGS }, models, theme, async value => { saved.push(value); }, () => {}, () => {}, () => 40);
   try {
     chooseNext(view); // indicator position
-    down(view, 1); chooseNext(view); // animation
     down(view, 1); chooseNext(view); // model
     down(view, 1); chooseNext(view); // effort: inherit -> off
     down(view, 1); chooseNext(view); // context
@@ -24,8 +23,9 @@ test('every setting is edited with pickers or a validated number input and saved
     for (const value of ['3', '2', '40', '900']) {
       down(view, 1); view.handleInput('\r'); view.handleInput('\x15'); view.handleInput(value); view.handleInput('\r');
     }
-    await vi.waitFor(() => expect(saved).toHaveLength(10));
-    expect(saved.at(-1)).toMatchObject({ indicatorPosition: 'status', indicatorAnimation: false, model: 'local/reasoning', thinking: 'off',
+    await vi.waitFor(() => expect(saved).toHaveLength(9));
+    expect(saved.at(-1)).not.toHaveProperty('indicatorAnimation');
+    expect(saved.at(-1)).toMatchObject({ indicatorPosition: 'status', model: 'local/reasoning', thinking: 'off',
       context: 'fork', isolation: 'worktree', maxConcurrent: 3, maxDepth: 2, maxTurns: 40, timeoutSeconds: 900 });
     expect(text(view)).toContain('Saved'); expect(text(view)).not.toContain('"maxConcurrent"');
     for (const width of [0, 1, 10, 80]) expect(view.render(width).every(line => visibleWidth(line) <= width)).toBe(true);
@@ -36,7 +36,7 @@ test('invalid numeric edits stay in the field and Escape cancels that field', as
   const save = vi.fn(async () => {});
   const view = new SubagentSettingsEditor({ ...DEFAULT_SUBAGENT_SETTINGS }, models, theme, save, () => {}, () => {}, () => 40);
   try {
-    down(view, 6); view.handleInput('\r'); view.handleInput('\x15'); view.handleInput('0'); view.handleInput('\r');
+    down(view, 5); view.handleInput('\r'); view.handleInput('\x15'); view.handleInput('0'); view.handleInput('\r');
     expect(text(view)).toContain('whole number from 1 to 16'); expect(save).not.toHaveBeenCalled();
     view.handleInput('\x1b'); expect(text(view)).toContain('Parallel agents'); expect(save).not.toHaveBeenCalled();
     view.handleInput('\r'); view.handleInput('\x15'); view.handleInput('16'); view.handleInput('\r');
@@ -67,7 +67,7 @@ test('rapid edits serialize writes and Escape waits for the final save', async (
     chooseNext(view); down(view, 1); chooseNext(view); view.handleInput('\x1b');
     await Promise.resolve(); expect(closed).toBe(false); expect(save).toHaveBeenCalledTimes(1);
     release(); await vi.waitFor(() => expect(closed).toBe(true));
-    expect(completed).toHaveLength(2); expect(completed.at(-1)?.indicatorAnimation).toBe(false);
+    expect(completed).toHaveLength(2); expect(completed.at(-1)?.model).toBe('local/reasoning');
   } finally { release?.(); view.dispose(); }
 });
 
@@ -76,7 +76,7 @@ test('model selection offers configured models and resets unsupported effort to 
   const view = new SubagentSettingsEditor({ ...DEFAULT_SUBAGENT_SETTINGS, model: 'local/reasoning', thinking: 'high' }, models, theme,
     async value => { saved.push(value); }, () => {}, () => {}, () => 40);
   try {
-    down(view, 2); view.handleInput('\r'); view.handleInput('\x1b[A'); view.handleInput('\r');
+    down(view, 1); view.handleInput('\r'); view.handleInput('\x1b[A'); view.handleInput('\r');
     await vi.waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0]).toMatchObject({ model: 'current', thinking: 'current' });
   } finally { view.dispose(); }
@@ -95,7 +95,7 @@ test('native TUI settings retain input focus and restore the parent draft when c
   tui.addChild(view); tui.setFocus(view); tui.start();
   const frame = () => { tui.renderNow(); return tui.captureRenderState().previousLines.map(stripTerminalSequences).join('\n'); };
   try {
-    for (let i = 0; i < 6; i++) send('\x1b[B'); send('\r');
+    for (let i = 0; i < 5; i++) send('\x1b[B'); send('\r');
     expect(frame()).toContain('Ctrl+U replace');
     send('\x15'); send('6'); send('\r');
     await vi.waitFor(() => expect(saved[0]?.maxConcurrent).toBe(6));

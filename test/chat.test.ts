@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest';
 import { initTheme, type Theme } from '@earendil-works/pi-coding-agent';
-import { Container, Input, Text, TuiMainScreen, stripTerminalSequences, visibleWidth, type OverlayHandle, type Terminal } from '@earendil-works/pi-tui';
+import { Container, Input, ScrollView, Text, TuiAltScreen, TuiMainScreen, VStack, stripTerminalSequences, visibleWidth,
+  type Component, type OverlayHandle, type Terminal } from '@earendil-works/pi-tui';
 import type { EntryRecord } from '@earendil-works/pi-durable';
 import { fauxAssistantMessage as answer, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { chatItems, SubagentChat } from '../src/chat.ts';
@@ -73,6 +74,142 @@ test('a real TUI reveals parent prompts and returns through the chat and browser
     expect(draft.getValue()).toBe('Keep my parent draft');
     expect(tui.hasOverlay()).toBe(false);
   } finally { handle?.hide(); chat?.dispose(); browser?.dispose(); tui.stop(); }
+});
+
+const MOUSE_MODE = /\x1b\[\?100[0-6][hl]/;
+const wheelUp = '\x1b[<64;10;5M', wheelDown = '\x1b[<65;10;5M';
+const longSnapshot = () => {
+  const view = snapshot('completed');
+  view.entries = [entry(1, answer(Array.from({ length: 100 }, (_, index) => `Message row ${index}`).join('\n')))];
+  return view;
+};
+/** The parts of Pi's fullscreen layout that matter here: a primary transcript and an editor slot above the footer. */
+function fullscreenParent() {
+  let send!: (data: string) => void;
+  const writes: string[] = [];
+  const terminal: Terminal = { rows: 12, columns: 100, kittyProtocolActive: false,
+    start: onInput => { send = onInput; }, stop() {}, async drainInput() {}, write: data => { writes.push(data); }, moveBy() {}, hideCursor() {}, showCursor() {},
+    clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {} };
+  const tui = new TuiAltScreen(terminal, true);
+  const document = new Text(Array.from({ length: 40 }, (_, index) => `Parent conversation ${index}`).join('\n'), 0, 0);
+  const transcript = new ScrollView(document, { follow: 'end', primary: true });
+  const slot = new Container(), footer = new Text('Parent footer', 0, 0), draft = new Input();
+  draft.setValue('Keep my parent draft');
+  const root = new VStack([{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+    { component: new VStack([{ component: slot, shrink: 1, minSize: 3 }, { component: footer, shrink: 1, minSize: 0 }]), basis: 'auto', grow: 0, shrink: 1, minSize: 1 }]);
+  tui.addChild(document); tui.addChild(slot); tui.addChild(footer); tui.setLayoutRoot(root);
+  const show = (component: Component) => { slot.clear(); slot.addChild(component); tui.setFocus(component); };
+  show(draft); tui.start();
+  const started = writes.length;
+  const frame = () => { tui.renderNow(); return tui.getScreenLines().map(stripTerminalSequences).join('\n'); };
+  const root$ = () => (tui as unknown as { layoutRoot?: Component }).layoutRoot;
+  return { tui, transcript, draft, root, show, frame, layoutRoot: root$, send: (data: string) => send(data),
+    laterWrites: () => writes.slice(started).join('') };
+}
+
+test('Pi fullscreen gives the focused chat the whole screen and wheel scrolling, then restores the parent layout', () => {
+  const parent = fullscreenParent(), view = longSnapshot();
+  let closed = 0;
+  const chat = new SubagentChat(view, async () => view, async () => {}, theme, () => {
+    closed++; parent.show(parent.draft); chat.dispose();
+  }, () => parent.tui.requestRender(), () => 6);
+  try {
+    expect(parent.frame()).toContain('Keep my parent draft');
+    const parentScroll = parent.transcript.scrollTop;
+    expect(chat.takeOverScreen(parent.tui)).toBe(true);
+    parent.show(chat);
+    let screen = parent.frame();
+    expect(chat.ownsScreen).toBe(true);
+    expect(parent.tui.getScreenLines()).toHaveLength(12);
+    expect(screen).toContain('Explore #9'); expect(screen).toContain('Wheel ↑↓ scroll');
+    expect(screen).toContain('Message row 99'); expect(screen).not.toContain('Parent footer'); expect(screen).not.toContain('Parent conversation');
+    for (let i = 0; i < 10; i++) parent.send(wheelUp);
+    screen = parent.frame();
+    expect(screen).not.toContain('Message row 99'); expect(screen).toContain('Message row 89');
+    expect(parent.transcript.scrollTop).toBe(parentScroll);
+    for (let i = 0; i < 10; i++) parent.send(wheelDown);
+    expect(parent.frame()).toContain('Message row 99');
+    view.entries = [entry(1, answer(Array.from({ length: 101 }, (_, index) => `Message row ${index}`).join('\n')))];
+    expect(parent.frame()).toContain('Message row 100');
+    parent.send(wheelUp); parent.send(wheelUp);
+    // Compare conversation rows only. Pi 1.5 can flash a copy notice over the header row.
+    const conversation = () => parent.frame().split('\n').slice(3, -2);
+    const scrolled = conversation();
+    expect(scrolled.join('\n')).not.toContain('Message row 100');
+    // Pi keeps click-and-drag selection over the chat.
+    parent.send('\x1b[<0;3;6M'); parent.send('\x1b[<32;20;6M');
+    expect(parent.tui.hasActiveSelection()).toBe(true);
+    parent.send('\x1b[<0;20;6m'); parent.tui.resetTextSelection();
+    expect(conversation()).toEqual(scrolled);
+
+    // A parent prompt replaces the chat in the dialog slot. The parent layout returns so the prompt is visible.
+    let reply = '';
+    const question = new Input({ prompt: 'Approve parent action? ' });
+    question.onSubmit = value => { reply = value; parent.show(chat); };
+    parent.show(question);
+    expect(chat.focused).toBe(false); expect(chat.ownsScreen).toBe(false); expect(parent.layoutRoot()).toBe(parent.root);
+    screen = parent.frame();
+    expect(screen).toContain('Approve parent action?'); expect(screen).toContain('Parent footer'); expect(screen).not.toContain('Explore #9');
+    parent.send(wheelUp);
+    parent.send('No'); parent.send('\r');
+    expect(reply).toBe('No'); expect(chat.focused).toBe(true); expect(chat.ownsScreen).toBe(true);
+    expect(conversation()).toEqual(scrolled);
+
+    parent.send('\x1b');
+    expect(closed).toBe(1); expect(parent.layoutRoot()).toBe(parent.root);
+    screen = parent.frame();
+    expect(screen).toContain('Keep my parent draft'); expect(screen).toContain('Parent footer'); expect(screen).not.toContain('Explore #9');
+    expect(parent.tui.getFocusedComponent()).toBe(parent.draft); expect(parent.draft.getValue()).toBe('Keep my parent draft');
+    expect(parent.laterWrites()).not.toMatch(MOUSE_MODE);
+  } finally { chat.dispose(); parent.tui.stop(); }
+});
+
+test('a fullscreen overlay chat hides itself behind its takeover and regains it after a parent prompt', () => {
+  const parent = fullscreenParent(), view = longSnapshot();
+  const chat = new SubagentChat(view, async () => view, async () => {}, theme, () => {}, () => parent.tui.requestRender(), () => 12);
+  let handle: OverlayHandle | undefined;
+  try {
+    expect(chat.takeOverScreen(parent.tui)).toBe(true);
+    handle = parent.tui.showOverlay(chat, { width: '100%', maxHeight: '100%', anchor: 'top-left', margin: 0 });
+    expect(chat.render(100)).toEqual([]);
+    expect(parent.frame()).toContain('Explore #9');
+    parent.send(wheelUp); parent.send(wheelUp);
+    expect(parent.frame()).not.toContain('Message row 99');
+    const question = new Input({ prompt: 'Approve parent action? ' });
+    question.onSubmit = () => parent.show(parent.draft);
+    parent.show(question);
+    expect(parent.frame()).toContain('Approve parent action?'); expect(parent.layoutRoot()).toBe(parent.root);
+    parent.send('\r');
+    expect(parent.tui.getFocusedComponent()).toBe(chat); expect(chat.ownsScreen).toBe(true);
+    expect(parent.frame()).toContain('Explore #9');
+    handle.hide(); chat.dispose();
+    expect(parent.layoutRoot()).toBe(parent.root);
+    expect(parent.tui.getFocusedComponent()).toBe(parent.draft);
+    expect(parent.frame()).toContain('Keep my parent draft');
+    expect(parent.laterWrites()).not.toMatch(MOUSE_MODE);
+  } finally { handle?.hide(); chat.dispose(); parent.tui.stop(); }
+});
+
+test('the regular renderer keeps the chat in place, and only focused wheel events scroll it', () => {
+  const view = longSnapshot();
+  const chat = new SubagentChat(view, async () => view, async () => {}, theme, () => {}, () => {}, () => 24);
+  const tui = new TuiMainScreen({ rows: 24, columns: 80 } as Terminal, true);
+  const wheel = (wheelDelta: number, type: 'wheel' | 'press' = 'wheel') => chat.handleMouse({ type, button: 'none', x: 0, y: 0, screenX: 0, screenY: 0,
+    width: 80, height: 24, shift: false, alt: false, ctrl: false, wheelDelta });
+  const content = () => chat.render(80).map(stripTerminalSequences).join('\n');
+  try {
+    expect(chat.takeOverScreen(tui)).toBe(false); expect(chat.ownsScreen).toBe(false);
+    expect(content()).toContain('Message row 99'); expect(content()).not.toContain('Wheel');
+    expect(wheel(-3, 'press')).toBeUndefined();
+    expect(wheel(-3)).toEqual({ handled: true });
+    expect(content()).not.toContain('Message row 99'); expect(content()).toContain('Message row 96');
+    chat.focused = false; expect(wheel(-3)).toBeUndefined(); chat.focused = true;
+    expect(content()).toContain('Message row 96');
+    expect(wheel(50)).toEqual({ handled: true });
+    view.entries = [entry(1, answer(Array.from({ length: 101 }, (_, index) => `Message row ${index}`).join('\n')))];
+    expect(content()).toContain('Message row 100');
+    chat.dispose(); expect(wheel(-1)).toBeUndefined();
+  } finally { chat.dispose(); }
 });
 
 test('short terminals drop header details before hiding conversation text', () => {

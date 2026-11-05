@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { Input, Key, Markdown, Text, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from '@earendil-works/pi-tui';
+import { Container, Input, Key, Markdown, Text, isViewportTUI, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth,
+  type Component, type TUI, type TuiMouseEvent, type TuiMouseEventResult, type ViewportTUI } from '@earendil-works/pi-tui';
 import { getMarkdownTheme, type Theme } from '@earendil-works/pi-coding-agent';
 import type { EntryRecord } from '@earendil-works/pi-durable';
 import { isRunning, type ChildChatSnapshot } from './runtime.ts';
@@ -51,6 +52,27 @@ export function chatItems(entries: EntryRecord[], inherited = false): ChatItem[]
 
 type Steer = (text: string, requestId: string, expectedRun: number) => Promise<void>;
 
+/**
+ * Pi's fullscreen renderer has no public getter for its layout root. Read the field only on a
+ * viewport renderer, and only accept a component, so another Pi version disables takeover instead of losing the parent layout.
+ */
+function layoutRoot(tui: TUI): Component | undefined {
+  if (!isViewportTUI(tui)) return undefined;
+  const root = (tui as unknown as { layoutRoot?: unknown }).layoutRoot;
+  return root && typeof (root as Component).render === 'function' ? root as Component : undefined;
+}
+
+/** Layout root that draws the chat across the fullscreen viewport. It contains the chat so Pi's focus checks still find it. */
+class ChatScreen extends Container {
+  constructor(private chat: SubagentChat, private draw: (width: number) => string[]) { super(); this.children.push(chat); }
+  override render(width: number): string[] { return this.draw(width); }
+  override handleMouse(event: TuiMouseEvent): ReturnType<Container['handleMouse']> {
+    const result = this.chat.handleMouse(event);
+    return result?.handled ? { ...result, handled: true, target: { component: this.chat, originX: event.screenX - event.x,
+      originY: event.screenY - event.y, width: event.width, height: event.height } } : undefined;
+  }
+}
+
 export class SubagentChat implements Component {
   private hasFocus = true;
   get focused(): boolean { return this.hasFocus; }
@@ -58,9 +80,14 @@ export class SubagentChat implements Component {
     if (this.hasFocus === value) return;
     this.hasFocus = value;
     this.input.focused = value;
+    this.syncScreen();
     if (!this.disposed) this.requestRender();
   }
+  /** Pi 1.5 sends Page Up, Page Down, and other viewport keys to this component instead of the parent transcript. */
+  readonly capturesViewportInput = true;
+  private screen?: { tui: ViewportTUI; root: ChatScreen; previous?: Component };
   private offset = 0;
+  private maxOffset = 0;
   private viewportHeight = 1;
   private follow = true;
   private showTools = false;
@@ -92,6 +119,39 @@ export class SubagentChat implements Component {
     catch (error) { if (!this.disposed) this.loadFailure = error instanceof Error ? error.message : String(error); }
     finally { this.pending = false; if (!this.disposed) this.requestRender(); }
   }
+  /**
+   * On Pi's fullscreen renderer, show this chat as the whole screen while it has keyboard focus.
+   * Pi still owns the dialog stack, focus, and the parent draft. When a parent prompt takes focus,
+   * or the chat closes, the parent layout returns. Returns false when the renderer cannot do this.
+   */
+  takeOverScreen(tui: TUI): boolean {
+    if (this.disposed || !isViewportTUI(tui) || !layoutRoot(tui)) return false;
+    this.screen = { tui, root: new ChatScreen(this, width => this.renderChat(width, tui.terminal.rows)) };
+    this.syncScreen();
+    return true;
+  }
+  get ownsScreen(): boolean { return !!this.screen && layoutRoot(this.screen.tui) === this.screen.root; }
+  private syncScreen(): void {
+    const screen = this.screen;
+    if (!screen) return;
+    const current = layoutRoot(screen.tui);
+    if (this.hasFocus && !this.disposed) {
+      if (current && current !== screen.root) { screen.previous = current; screen.tui.setLayoutRoot(screen.root); }
+    } else if (current === screen.root && screen.previous) {
+      screen.tui.setLayoutRoot(screen.previous); screen.previous = undefined;
+    }
+  }
+  /** The wheel scrolls the conversation. Other mouse events stay with Pi for text selection and copying. */
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (this.disposed || !this.hasFocus || event.type !== 'wheel' || !event.wheelDelta) return undefined;
+    this.scroll(event.wheelDelta);
+    return { handled: true };
+  }
+  /** Scrolling down to the last line follows new messages again. */
+  private scroll(lines: number): void {
+    this.offset = Math.max(0, Math.min(this.maxOffset, this.offset + lines));
+    this.follow = lines > 0 && this.offset >= this.maxOffset;
+  }
   private startSteering(): void {
     if (this.snapshot.run.status === 'starting') { this.notice = 'This child is starting. Wait until it is running before steering.'; return; }
     if (!isRunning(this.snapshot.run)) { this.notice = 'This task has finished. Ask the parent to start a follow-up.'; return; }
@@ -122,10 +182,10 @@ export class SubagentChat implements Component {
     if (data === 's' || data === 'S') this.startSteering();
     else if (data === 'o' || data === 'O') { this.showTools = !this.showTools; this.bodies.clear(); }
     else if (data === 'i' || data === 'I') { this.showInherited = !this.showInherited; this.bodies.clear(); }
-    else if (matchesKey(data, Key.up)) { this.follow = false; this.offset = Math.max(0, this.offset - 1); }
-    else if (matchesKey(data, Key.down)) { this.follow = false; this.offset++; }
-    else if (matchesKey(data, Key.pageUp)) { this.follow = false; this.offset = Math.max(0, this.offset - page); }
-    else if (matchesKey(data, Key.pageDown)) { this.follow = false; this.offset += page; }
+    else if (matchesKey(data, Key.up)) this.scroll(-1);
+    else if (matchesKey(data, Key.down)) this.scroll(1);
+    else if (matchesKey(data, Key.pageUp)) this.scroll(-page);
+    else if (matchesKey(data, Key.pageDown)) this.scroll(page);
     else if (matchesKey(data, Key.home)) { this.follow = false; this.offset = 0; }
     else if (matchesKey(data, Key.end)) this.follow = true;
     this.requestRender();
@@ -175,7 +235,12 @@ export class SubagentChat implements Component {
   render(width: number): string[] {
     // Leave the overlay registered so Pi can restore focus after the other dialog closes.
     // Rendering no rows reveals that dialog without interfering with its input or focus.
-    if (width < 1 || !this.focused) return [];
+    // While the chat owns the fullscreen layout, the layout root draws it instead of the dialog slot.
+    if (width < 1 || !this.focused || this.ownsScreen) return [];
+    return this.renderChat(width, this.rows());
+  }
+  private renderChat(width: number, terminalRows: number): string[] {
+    if (width < 1) return [];
     const run = this.snapshot.run, color = isRunning(run) ? 'accent' : run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : 'muted';
     const header = this.theme.bold(this.theme.fg('text', ` ${oneLine(run.agent)} #${oneLine(run.id)}`)) + this.theme.fg(color, `  ${oneLine(run.status)}`);
     const meta = ` ${oneLine(`${run.model} · thinking ${run.thinking} · ${run.toolCalls} tool calls · task ${run.run}`)}`;
@@ -187,8 +252,8 @@ export class SubagentChat implements Component {
       bottom.push(this.theme.fg('warning', truncateToWidth(this.sending ? ' Sending direction… · Esc back' : ` Steer task ${this.composeRun} · Enter send · Esc back`, width)));
       this.input.focused = this.focused;
       bottom.push(...this.input.render(width));
-    } else bottom.push(this.theme.fg('muted', truncateToWidth(` ↑↓ scroll · End latest · O tool output · I inherited${run.status === 'running' ? ' · S steer' : ''} · Esc back`, width)));
-    const rows = Math.max(1, this.rows());
+    } else bottom.push(this.theme.fg('muted', truncateToWidth(` ${this.screen ? 'Wheel ' : ''}↑↓ scroll · End latest · O tool output · I inherited${run.status === 'running' ? ' · S steer' : ''} · Esc back`, width)));
+    const rows = Math.max(1, terminalRows);
     const border = this.theme.fg('borderAccent', '─'.repeat(width));
     const footerLimit = Math.max(1, rows - 1);
     if (bottom.length > footerLimit && (this.failure || this.loadFailure || this.notice)) bottom.splice(1, 1);
@@ -198,11 +263,12 @@ export class SubagentChat implements Component {
     const height = Math.max(0, rows - top.length - footer.length);
     this.viewportHeight = height;
     const maxOffset = Math.max(0, body.length - height);
+    this.maxOffset = maxOffset;
     this.offset = this.follow ? maxOffset : Math.min(this.offset, maxOffset);
     const content = body.slice(this.offset, this.offset + height);
     while (content.length < height) content.push('');
     return [...top, ...content, ...footer].map(line => visibleWidth(line) > width ? truncateToWidth(line, width) : line);
   }
   invalidate(): void { this.bodies.clear(); }
-  dispose(): void { this.disposed = true; clearInterval(this.timer); }
+  dispose(): void { this.disposed = true; clearInterval(this.timer); this.syncScreen(); }
 }

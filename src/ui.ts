@@ -7,50 +7,26 @@ import { isRunning, type RunSnapshot } from './runtime.ts';
 export const cleanText = (value: string): string => stripTerminalSequences(value).replace(/\r/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 export function oneLine(value: string): string { return cleanText(value).replace(/\s+/g, ' ').trim(); }
 
-const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-export function formatSubagentStatus(runs: RunSnapshot[], frame?: number): string | undefined {
-  const active = runs.filter(isRunning);
-  if (!active.length) return undefined;
-  const paused = active.filter(run => run.recoveryError).length;
-  const counts = new Map<string, number>();
-  for (const run of active) {
-    const state = run.recoveryError ? 'paused' : run.activity?.startsWith('tool:') ? 'tools' : run.activity ?? (run.status === 'starting' ? 'starting' : 'working');
-    counts.set(state, (counts.get(state) ?? 0) + 1);
-  }
-  const icon = paused === active.length ? 'Ⅱ' : frame === undefined ? '●' : frames[frame % frames.length];
-  return `${icon} Subagents ${active.length} · ${[...counts].map(([state, count]) => `${state} ${count}`).join(' · ')}`;
+/**
+ * `Subagents N`, where N counts open children whose latest task is starting or running. The count
+ * includes nested children and children paused for recovery. Nothing shows when N is zero.
+ */
+export function formatSubagentStatus(runs: RunSnapshot[]): string | undefined {
+  const active = runs.filter(isRunning).length;
+  return active ? `Subagents ${active}` : undefined;
 }
 
-/** Animation uses cached summaries. It performs no runtime reads or writes. */
+/** Publishes only when the text changes. It starts no timers and performs no runtime reads or writes. */
 export class SubagentIndicator {
-  private runs: RunSnapshot[] = [];
-  private previous = new Map<string, boolean>();
-  private frame = 0;
-  private animated = true;
-  private timer?: ReturnType<typeof setInterval>;
-  private expiry?: ReturnType<typeof setTimeout>;
-  private terminal?: string;
+  private text?: string;
+  private published = false;
   constructor(private publish: (text: string | undefined) => void) {}
-  setAnimated(animated: boolean): void { this.animated = animated; this.redraw(); }
   update(runs: RunSnapshot[]): void {
-    const finished = runs.filter(run => this.previous.get(run.receipt) && !isRunning(run));
-    this.previous = new Map(runs.map(run => [run.receipt, isRunning(run)])); this.runs = runs;
-    if (finished.length) {
-      clearTimeout(this.expiry);
-      const failed = finished.filter(run => run.status === 'failed').length, cancelled = finished.filter(run => run.status === 'cancelled').length;
-      this.terminal = failed ? `✗ Subagents · ${failed} failed` : cancelled ? `⊘ Subagents · ${cancelled} cancelled` : `✓ Subagents · ${finished.length} completed`;
-      this.expiry = setTimeout(() => { this.terminal = undefined; this.redraw(); }, 3500); this.expiry.unref();
-    }
-    this.redraw();
+    const text = formatSubagentStatus(runs);
+    if (this.published && text === this.text) return;
+    this.text = text; this.published = true; this.publish(text);
   }
-  private redraw(): void {
-    const moving = this.animated && this.runs.some(run => isRunning(run) && !run.recoveryError);
-    if (moving && !this.timer) { this.timer = setInterval(() => { this.frame++; this.draw(); }, 120); this.timer.unref(); }
-    else if (!moving && this.timer) { clearInterval(this.timer); this.timer = undefined; }
-    this.draw();
-  }
-  private draw(): void { this.publish(formatSubagentStatus(this.runs, this.animated ? this.frame : undefined) ?? this.terminal); }
-  dispose(): void { clearInterval(this.timer); clearTimeout(this.expiry); this.timer = undefined; this.expiry = undefined; this.runs = []; this.previous.clear(); this.terminal = undefined; }
+  dispose(): void { this.text = undefined; this.published = false; }
 }
 
 export const SUBAGENT_SHORTCUT = 'shift+left';
