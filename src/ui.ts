@@ -7,13 +7,12 @@ import { isRunning, type RunSnapshot } from './runtime.ts';
 export const cleanText = (value: string): string => stripTerminalSequences(value).replace(/\r/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 export function oneLine(value: string): string { return cleanText(value).replace(/\s+/g, ' ').trim(); }
 
-/**
- * `Subagents N`, where N counts open children whose latest task is starting or running. The count
- * includes nested children and children paused for recovery. Nothing shows when N is zero.
- */
+/** Counts open children once each, using their latest task. Failed and recovery-paused children need attention. */
 export function formatSubagentStatus(runs: RunSnapshot[]): string | undefined {
+  if (!runs.length) return undefined;
   const active = runs.filter(isRunning).length;
-  return active ? `Subagents ${active}` : undefined;
+  const attention = runs.filter(run => run.status === 'failed' || (isRunning(run) && !!run.recoveryError)).length;
+  return `Subagents ${active}/${runs.length}${attention ? ` ⚠ ${attention}` : ''}`;
 }
 
 /** Publishes only when the text changes. It starts no timers and performs no runtime reads or writes. */

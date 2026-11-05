@@ -71,7 +71,7 @@ export default function subagents(pi: ExtensionAPI, options: {
   let generation = 0;
   const pickerShortcut = editorPickerShortcut(context => command('', context), report);
   const indicator = new SubagentIndicator(text => {
-    ctx?.ui.setStatus('pi-subagents', text && ctx.mode === 'tui' && ctx.hasUI && ctx.ui.theme?.fg ? ctx.ui.theme.fg('accent', text) : text);
+    ctx?.ui.setStatus('pi-subagents', text && ctx.mode === 'tui' && ctx.hasUI && ctx.ui.theme?.fg ? ctx.ui.theme.fg(text.includes('⚠') ? 'error' : 'accent', text) : text);
   });
 
   function report(error: unknown): void { ctx?.ui.notify(cleanText(error instanceof Error ? error.message : String(error)), 'error'); }

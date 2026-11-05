@@ -259,9 +259,11 @@ The task number is checked when the direction is saved. If the child finishes or
 
 ## Status indicator
 
-While children run, `Subagents N` appears on the right of the first footer line. N counts open children whose latest task is starting or running. The count includes nested children and children paused for recovery. Completed, failed, cancelled, and closed tasks are not counted. The indicator hides when N is zero.
+The indicator shows `Subagents 3/7` on the right of the first footer line. The first number counts children whose latest task is starting or running, including children paused for recovery. The second counts all open children, including nested, completed, failed, and cancelled children. Closed children are excluded. The indicator hides when there are no open children.
 
-The indicator has no animation, activity breakdown, or completion message. Results arrive in the parent chat, and the task browser shows each child's activity. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
+A red `⚠ N` suffix flags children whose latest task failed or whose active task is paused for recovery. Deliberate cancellation and normal completion do not trigger it. Open the task browser to inspect the errors. The warning clears when those children start a healthy task or are closed.
+
+The indicator has no animation. Results arrive in the parent chat, and the task browser shows each child's activity. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
 
 This placement uses Pi's custom-footer slot. If another extension supplies your footer, set `indicatorPosition` to `"status"` to use the ordinary extension-status row instead. Change settings with `/agents config`. In either mode, Shift+Left opens the task browser whenever the text box has focus, whether empty or not. Your text stays intact. Alt+Left keeps the editor's word-navigation behavior.
 

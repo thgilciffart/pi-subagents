@@ -4,12 +4,12 @@ import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux';
 import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
 import { editorPickerShortcut, formatSubagentStatus, footerRow, subagentFooter, SUBAGENT_SHORTCUT, SubagentIndicator } from '../src/ui.ts';
 
-test('the indicator shows only Subagents and the active count', () => {
+test('the indicator counts active and total children and flags failures or paused recovery', () => {
   expect(SUBAGENT_SHORTCUT).toBe('shift+left');
   const runs = [{ status: 'running', activity: 'tool:read' }, { status: 'starting' }, { status: 'running', recoveryError: 'Trust required' },
     { status: 'running', parentChildId: '1' }, { status: 'completed' }, { status: 'failed' }, { status: 'cancelled' }] as any;
-  expect(formatSubagentStatus(runs)).toBe('Subagents 4');
-  expect(formatSubagentStatus([{ status: 'completed' }] as any)).toBeUndefined();
+  expect(formatSubagentStatus(runs)).toBe('Subagents 4/7 ⚠ 2');
+  expect(formatSubagentStatus([{ status: 'completed' }, { status: 'cancelled' }] as any)).toBe('Subagents 0/2');
   expect(formatSubagentStatus([])).toBeUndefined();
 });
 
@@ -18,11 +18,11 @@ test('the indicator publishes count changes only, with no timers or completion f
   const publish = vi.fn(), indicator = new SubagentIndicator(publish);
   const run = { id: '1', run: 1, receipt: 'parent:1:1', status: 'running', activity: 'thinking' } as any;
   try {
-    indicator.update([run]); expect(publish.mock.calls).toEqual([['Subagents 1']]);
+    indicator.update([run]); expect(publish.mock.calls).toEqual([['Subagents 1/1']]);
     expect(vi.getTimerCount()).toBe(0);
     indicator.update([{ ...run, activity: 'tool:read' }]); expect(publish).toHaveBeenCalledTimes(1);
-    indicator.update([run, { ...run, id: '2', receipt: 'parent:2:1' }]); expect(publish.mock.lastCall).toEqual(['Subagents 2']);
-    indicator.update([{ ...run, status: 'failed' }]); expect(publish.mock.lastCall).toEqual([undefined]);
+    indicator.update([run, { ...run, id: '2', receipt: 'parent:2:1' }]); expect(publish.mock.lastCall).toEqual(['Subagents 2/2']);
+    indicator.update([{ ...run, status: 'failed' }]); expect(publish.mock.lastCall).toEqual(['Subagents 0/1 ⚠ 1']);
     vi.advanceTimersByTime(5000); expect(publish).toHaveBeenCalledTimes(3);
     indicator.dispose(); indicator.update([]); expect(publish.mock.lastCall).toEqual([undefined]);
     expect(vi.getTimerCount()).toBe(0);
