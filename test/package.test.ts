@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { getPackageDir } from '@earendil-works/pi-coding-agent';
 
 const exec = promisify(execFile);
-test('the package uses host APIs through both SDK and bundled CLI loaders without local host peers', async () => {
+test('the package loads through SDK and CLI without local host peers and discovers its skill through package settings', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'pi-subagents-package-'));
   try {
     const { stdout } = await exec('npm', ['pack', '--json', '--pack-destination', dir]);
@@ -42,6 +42,13 @@ export default function (pi) {
 `);
     const script = fileURLToPath(new URL('./process/package.ts', import.meta.url));
     await exec(process.execPath, ['--import', 'tsx', script, join(dir, 'package', 'index.ts'), dir, hook], { timeout: 15000 });
+    // An empty HOME keeps the developer's personal skills out of discovery.
+    const home = join(dir, 'home');
+    await mkdir(home);
+    const skillScript = fileURLToPath(new URL('./process/package-skill.ts', import.meta.url));
+    const { stdout: skillOutput } = await exec(process.execPath, ['--import', 'tsx', skillScript, join(dir, 'package'), dir],
+      { env: { ...process.env, HOME: home }, timeout: 15000 });
+    expect(skillOutput).toContain('Packaged skill checks passed');
     const cliAgentDir = join(dir, 'cli-agent');
     await mkdir(cliAgentDir);
     const cli = exec(process.execPath, [join(getPackageDir(), 'dist/bundle/cli.js'),

@@ -46,6 +46,14 @@ Steering uses `action: "steer"`, the child `id`, and a `task` message. It reache
 
 Use a stable `requestId` for `spawn`, `send`, and `steer`. Retrying the same request returns its original run. Reusing a key with different arguments fails.
 
+## Orchestration skill
+
+The package includes an optional `subagent-orchestration` skill in [`skills/subagent-orchestration/`](skills/subagent-orchestration/SKILL.md). It covers when to delegate, how to choose each child's agent, model, effort, permissions, workspace, and context, and how to steer, recover, and verify children. Pi lists its name and description and loads the instructions only when a task matches. Loading the skill does not authorize delegation or change any enforced policy.
+
+Trusted children see the skill on demand like other inherited parent skills. Exclude it at spawn with `"disabledSkills": ["subagent-orchestration"]` or `"skills": []`. To remove it from the parent, use Pi's package resource filter, such as `"skills": []` in this package's entry in `packages`, or `pi config`.
+
+Children save each inherited skill's content hash, even if they never read it. An update that changes this skill, or a filter that removes it, blocks saved children from using `send`, `steer`, or recovery. Running children also encounter validation failures on model requests and tool calls. To continue those children, restore the same skill contents and visibility, then resume paused work. Otherwise, start new children. Exclude the skill at spawn for children that must not depend on it.
+
 ## Delegate from a child
 
 A child with the `subagent` tool can create and manage its own direct children. The main parent can inspect and control the whole tree. Child calls support `list`, `spawn`, `send`, `steer`, `status`, `wait`, `result`, `transcript`, `cancel`, and `close`.
