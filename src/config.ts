@@ -7,6 +7,7 @@ export type SubagentSettings = {
   maxConcurrent: number;
   maxDepth: number;
   indicatorPosition: 'footer-right' | 'status';
+  indicatorAnimation: boolean;
   maxTurns: number;
   timeoutSeconds: number;
   model: string;
@@ -15,7 +16,7 @@ export type SubagentSettings = {
   thinking: Thinking | 'current';
 }
 export const DEFAULT_SUBAGENT_SETTINGS: Readonly<SubagentSettings> = {
-  maxConcurrent: 4, maxDepth: 3, indicatorPosition: 'footer-right', maxTurns: 20, timeoutSeconds: 300, model: 'current', thinking: 'current', isolation: 'shared', context: 'fresh',
+  maxConcurrent: 4, maxDepth: 3, indicatorPosition: 'footer-right', indicatorAnimation: true, maxTurns: 20, timeoutSeconds: 300, model: 'current', thinking: 'current', isolation: 'shared', context: 'fresh',
 };
 
 export function validateSubagentSettings(value: unknown): SubagentSettings {
@@ -29,7 +30,8 @@ export function validateSubagentSettings(value: unknown): SubagentSettings {
   if (settings.isolation !== 'shared' && settings.isolation !== 'worktree') throw new Error('isolation must be shared or worktree.');
   if (settings.context !== 'fresh' && settings.context !== 'fork') throw new Error('context must be fresh or fork.');
   if (settings.indicatorPosition !== 'footer-right' && settings.indicatorPosition !== 'status') throw new Error('indicatorPosition must be footer-right or status.');
-  return { indicatorPosition: settings.indicatorPosition, maxDepth: settings.maxDepth, context: settings.context, isolation: settings.isolation, maxConcurrent: settings.maxConcurrent, maxTurns: settings.maxTurns, timeoutSeconds: settings.timeoutSeconds, model: settings.model, thinking: settings.thinking };
+  if (typeof settings.indicatorAnimation !== 'boolean') throw new Error('indicatorAnimation must be a boolean.');
+  return { indicatorPosition: settings.indicatorPosition, indicatorAnimation: settings.indicatorAnimation, maxDepth: settings.maxDepth, context: settings.context, isolation: settings.isolation, maxConcurrent: settings.maxConcurrent, maxTurns: settings.maxTurns, timeoutSeconds: settings.timeoutSeconds, model: settings.model, thinking: settings.thinking };
 }
 
 export async function readSubagentSettings(path: string): Promise<SubagentSettings> {
@@ -38,6 +40,25 @@ export async function readSubagentSettings(path: string): Promise<SubagentSettin
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_SUBAGENT_SETTINGS };
     throw error;
   }
+}
+
+/** Preserve valid fields in a damaged file without writing until the user applies a change. */
+export async function editableSubagentSettings(path: string): Promise<{ settings: SubagentSettings; warning?: string }> {
+  let value: unknown;
+  try { value = JSON.parse(await readFile(path, 'utf8')); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { settings: { ...DEFAULT_SUBAGENT_SETTINGS } };
+    if (!(error instanceof SyntaxError)) throw error;
+    return { settings: { ...DEFAULT_SUBAGENT_SETTINGS }, warning: 'Settings contain invalid JSON. Defaults are shown; apply a change or choose Save settings to repair the file.' };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { settings: { ...DEFAULT_SUBAGENT_SETTINGS }, warning: 'Settings must be an object. Save the displayed values to repair the file.' };
+  const settings = { ...DEFAULT_SUBAGENT_SETTINGS }, invalid: string[] = [];
+  for (const key of Object.keys(settings) as (keyof SubagentSettings)[]) {
+    if (!Object.hasOwn(value, key)) continue;
+    try { Object.assign(settings, { [key]: validateSubagentSettings({ [key]: (value as Record<string, unknown>)[key] })[key] }); }
+    catch { invalid.push(key); }
+  }
+  return { settings, ...(invalid.length ? { warning: `Invalid values replaced with defaults: ${invalid.join(', ')}. Choose Save settings to repair the file.` } : {}) };
 }
 
 export async function writeSubagentSettings(path: string, value: unknown): Promise<void> {

@@ -26,6 +26,7 @@ test('browser details include completed tools during a running request and exclu
       });
     const child = await f.spawn({ context: 'fork', history });
     await begun;
+    expect((await f.runtime.indicatorRuns())[0].activity).toBe('thinking');
     expect((await f.runtime.list())[0].toolCalls).toBe(0);
     const before = JSON.stringify(await f.runtime.state());
     const details = (await f.runtime.browserRuns())[0];

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { discoverAgents, parseAgent } from '../src/agents.ts';
-import { DEFAULT_SUBAGENT_SETTINGS, readSubagentSettings, writeSubagentSettings } from '../src/config.ts';
+import { DEFAULT_SUBAGENT_SETTINGS, editableSubagentSettings, readSubagentSettings, writeSubagentSettings } from '../src/config.ts';
 
 const definition = (header: string) => `---\nname: custom\ndescription: Test agent\n${header}\n---\nWork on the assigned task.`;
 
@@ -63,11 +63,23 @@ test('subagent config has bounded defaults and rejects malformed files before sa
     await writeSubagentSettings(path, { maxConcurrent: 2, model: 'test/one' });
     const saved = await readFile(path, 'utf8');
     expect(await readSubagentSettings(path)).toMatchObject({ maxConcurrent: 2, model: 'test/one' });
-    for (const invalid of [{ maxDepth: 0 }, { maxDepth: 9 }, { indicatorPosition: 'somewhere' }, { maxConcurrent: 0 }, { maxConcurrent: 17 }, { maxTurns: 200 }, { timeoutSeconds: 0 }, { model: 'wrong' }, { thinking: 'turbo' }]) {
+    for (const invalid of [{ maxDepth: 0 }, { maxDepth: 9 }, { indicatorPosition: 'somewhere' }, { indicatorAnimation: 'yes' }, { maxConcurrent: 0 }, { maxConcurrent: 17 }, { maxTurns: 200 }, { timeoutSeconds: 0 }, { model: 'wrong' }, { thinking: 'turbo' }]) {
       await expect(writeSubagentSettings(path, invalid)).rejects.toThrow();
       expect(await readFile(path, 'utf8')).toBe(saved);
     }
     await writeFile(path, '{');
     await expect(readSubagentSettings(path)).rejects.toThrow();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('interactive settings preserve valid fields in damaged files without writing until saved', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-subagents-settings-repair-')), path = join(dir, 'settings.json');
+  try {
+    const raw = '{"maxTurns":0,"maxConcurrent":2,"indicatorAnimation":false}'; await writeFile(path, raw);
+    const repaired = await editableSubagentSettings(path);
+    expect(repaired.settings).toMatchObject({ maxTurns: 20, maxConcurrent: 2, indicatorAnimation: false });
+    expect(repaired.warning).toContain('maxTurns'); expect(await readFile(path, 'utf8')).toBe(raw);
+    await writeFile(path, '{'); expect((await editableSubagentSettings(path)).warning).toContain('invalid JSON');
+    await writeFile(path, '[]'); expect((await editableSubagentSettings(path)).warning).toContain('must be an object');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

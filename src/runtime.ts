@@ -408,6 +408,16 @@ export class SubagentRuntime {
     const state = await this.state();
     return Object.values(state.children).filter(child => !child.closed).map(child => clone(latest(child)));
   }
+  /** Read current activity without scanning conversation transcripts. */
+  async indicatorRuns(): Promise<RunSnapshot[]> {
+    return Promise.all((await this.list()).map(async run => {
+      if (!isRunning(run) || run.recoveryError) return run;
+      const live = await this.harness.snapshot(LiveDoc, Number(run.id) as ConversationId, C);
+      const tool = live?.tools?.find(tool => tool.status === 'running') ?? live?.tools?.find(tool => tool.status === 'pending');
+      run.activity = live?.compactions?.some(item => item.blocking) ? 'compacting' : tool ? `tool:${tool.name}` : live?.generation?.deferred ? 'waiting' : live?.generation ? 'thinking' : 'starting';
+      return run;
+    }));
+  }
   /** Read live details only while the on-demand browser is open. */
   async browserRuns(): Promise<RunSnapshot[]> {
     const state = await this.state();

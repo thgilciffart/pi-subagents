@@ -187,7 +187,7 @@ Children retain their IDs, conversations, tasks, models, settings, allowlists, o
 
 Temporary model-scope, model-availability, project-trust, and capability checks pause recovery without ending the task. The browser shows these tasks under Needs attention. Restore the required access, then call `resume` to continue the same saved checkpoints. A resume with an ID checks only that child. Saved deadlines still apply while recovery is paused. Invalid saved permissions, ownership, missing worktrees, lifecycle failures, and expired deadlines remain final failures. Pausing task records uses a version-specific Pi Durable 1.4 transaction bridge and fails closed if that bridge is unavailable.
 
-If startup fails because settings are invalid or another process holds the lock, later calls retry initialization. `/agents config` works without an initialized runtime, opens invalid settings as text, and retains edits after validation errors.
+If startup fails because settings are invalid or another process holds the lock, later calls retry initialization. `/agents config` works without an initialized runtime. Its controls preserve valid settings and show defaults for invalid values. Choose Save settings to repair the file. Failed saves retain your edits for another attempt.
 
 Saved-parent runtime data lives at `<Pi agent directory>/subagents/sessions/<parent hash>/`, outside the repository. SQLite stores task checkpoints and conversations. A separate SQLite lock prevents two processes from owning the same parent. Ephemeral parents keep child runtime data in memory and lose it on extension reload or process exit.
 
@@ -245,19 +245,24 @@ The task number is checked when the direction is saved. If the child finishes or
 
 ## Status indicator
 
-While children run, `Subagents N` appears on the right of the first footer line. The count includes nested children. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
+While children run, an animated `Subagents N` indicator appears on the right of the first footer line. It shows counts for thinking, tool use, startup, waiting, compaction, and paused recovery. The total includes nested children. A paused group stays still. Completion, failure, and cancellation appear briefly before the indicator clears. Saved results do not replay this feedback on reload.
+
+Animation uses cached activity summaries and stops when no child is working. Turn it off with Indicator animation in the extension's settings. The footer retains the working directory, branch, session name, token usage, cost, context usage, model, and other extension statuses. Narrow terminals shorten text to fit.
 
 This placement uses Pi's custom-footer slot. If another extension supplies your footer, set `indicatorPosition` to `"status"` to use the ordinary extension-status row instead. Change settings with `/agents config`. In either mode, Shift+Left opens the task browser whenever the text box has focus, whether empty or not. Your text stays intact. Alt+Left keeps the editor's word-navigation behavior.
 
 ## Settings
 
-Global defaults live at `<Pi agent directory>/subagents/settings.json`:
+Run `/agents config` or choose Edit settings in the task browser. The panel has searchable model and effort pickers, validated number fields, context and workspace choices, and indicator controls. Changes save automatically. Escape returns from a field or closes the panel after pending saves finish. Ctrl+U replaces the current number. Display changes apply immediately; existing children retain their saved execution settings. New children use these defaults unless the launch or definition overrides them.
+
+Global defaults are stored at `<Pi agent directory>/subagents/settings.json`:
 
 ```json
 {
 	"maxConcurrent": 4,
 	"maxDepth": 3,
 	"indicatorPosition": "footer-right",
+	"indicatorAnimation": true,
 	"maxTurns": 20,
 	"timeoutSeconds": 300,
 	"model": "current",
@@ -267,7 +272,7 @@ Global defaults live at `<Pi agent directory>/subagents/settings.json`:
 }
 ```
 
-`maxConcurrent` accepts 1 to 16 active tasks across the whole tree. `maxDepth` accepts 1 to 8 child layers. `indicatorPosition` accepts `footer-right` or `status`. `maxTurns` accepts 1 to 100 model-request attempts, including compaction and recovery. `timeoutSeconds` accepts 1 to 3,600 and includes downtime. New tasks use current settings; existing tasks retain their saved settings. Automatic provider retries are disabled.
+`maxConcurrent` accepts 1 to 16 active tasks across the whole tree. `maxDepth` accepts 1 to 8 child layers. `indicatorPosition` accepts `footer-right` or `status`. `indicatorAnimation` enables motion while children work. `maxTurns` accepts 1 to 100 model-request attempts, including compaction and recovery. `timeoutSeconds` accepts 1 to 3,600 and includes downtime. Automatic provider retries are disabled.
 
 ## Compatibility and development
 

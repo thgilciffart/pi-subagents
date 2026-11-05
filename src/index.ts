@@ -2,17 +2,17 @@ import { resolveSelection, resolveTools, resolveTrust } from './policy.ts';
 import { capabilityPrompt, capabilityTools, ParentCapabilities } from './capabilities.ts';
 import { NativeMcpBridge } from './mcp.ts';
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { convertToLlm, getAgentDir, loadProjectContextFiles, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { getCapabilities, Text } from '@earendil-works/pi-tui';
 import { Type, type Static } from 'typebox';
 import { discoverAgents, THINKING_LEVELS, type Thinking } from './agents.ts';
-import { DEFAULT_SUBAGENT_SETTINGS, readSubagentSettings, writeSubagentSettings } from './config.ts';
+import { editableSubagentSettings, readSubagentSettings, writeSubagentSettings, type SubagentSettings } from './config.ts';
 import { parentRuntime, SubagentRuntime, isRunning, type RunSnapshot, type SavedChild } from './runtime.ts';
 import { openStore } from './storage.ts';
 import { parentReceipts, RESULT_MESSAGE } from './receipts.ts';
-import { cleanText, compactText, editorPickerShortcut, formatSubagentStatus, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
+import { cleanText, compactText, editorPickerShortcut, SubagentIndicator, oneLine, runSummary, SubagentInspector, subagentFooter } from './ui.ts';
+import { SubagentSettingsEditor, type SettingsModel } from './settings-ui.ts';
 import { SubagentBrowser } from './browser.ts';
 import { SubagentChat } from './chat.ts';
 
@@ -57,8 +57,9 @@ export default function subagents(pi: ExtensionAPI, options: {
   let sessionId: string | undefined;
   let ready: Promise<void> = Promise.resolve();
   let ownsFooter = false;
-  function configureFooter(context: ExtensionContext, position: 'footer-right' | 'status'): void {
-    if (position === 'footer-right' && context.hasUI && context.mode === 'tui') {
+  function configureFooter(context: ExtensionContext, settings: SubagentSettings): void {
+    indicator.setAnimated(settings.indicatorAnimation && context.mode === 'tui' && context.hasUI);
+    if (settings.indicatorPosition === 'footer-right' && context.hasUI && context.mode === 'tui') {
       context.ui.setFooter((tui, theme, data) => subagentFooter(() => ctx ?? context, data, theme, () => tui.requestRender(), () => pi.getSettings().compaction?.enabled !== false));
       ownsFooter = true;
     } else if (ownsFooter) { context.ui.setFooter(undefined); ownsFooter = false; }
@@ -70,12 +71,16 @@ export default function subagents(pi: ExtensionAPI, options: {
   const mutations = new Set<symbol>();
   let generation = 0;
   const pickerShortcut = editorPickerShortcut(context => command('', context), report);
+  const indicator = new SubagentIndicator(text => {
+    const color = text?.startsWith('✗') ? 'error' : text?.startsWith('✓') ? 'success' : text?.includes('paused') ? 'warning' : 'accent';
+    ctx?.ui.setStatus('pi-subagents', text && ctx.mode === 'tui' && ctx.hasUI && ctx.ui.theme?.fg ? ctx.ui.theme.fg(color, text) : text);
+  });
 
   function report(error: unknown): void { ctx?.ui.notify(cleanText(error instanceof Error ? error.message : String(error)), 'error'); }
   function changed(): void {
     if (!runtime || !ctx) return;
     const owner = runtime;
-    void owner.list().then(runs => { if (runtime === owner) ctx?.ui.setStatus('pi-subagents', formatSubagentStatus(runs)); }).catch(report);
+    void owner.indicatorRuns().then(runs => { if (runtime === owner) indicator.update(runs); }).catch(report);
     noticeTimer ??= setTimeout(() => { noticeTimer = undefined; void flush().catch(report); }, 50);
     noticeTimer.unref();
   }
@@ -101,6 +106,7 @@ export default function subagents(pi: ExtensionAPI, options: {
     if (noticeTimer) clearTimeout(noticeTimer);
     noticeTimer = undefined; queued.clear(); reading.clear(); mutations.clear();
     const old = runtime; runtime = undefined;
+    indicator.dispose();
     ctx?.ui.setStatus('pi-subagents', undefined);
     if (ctx) pickerShortcut.dispose(ctx);
     if (ownsFooter) { ctx?.ui.setFooter(undefined); ownsFooter = false; }
@@ -108,7 +114,7 @@ export default function subagents(pi: ExtensionAPI, options: {
     ctx = context; sessionId = context?.sessionManager.getSessionId();
     if (!context) return;
     pickerShortcut.install(context);
-    configureFooter(context, (await readSubagentSettings(configPath)).indicatorPosition);
+    configureFooter(context, await readSubagentSettings(configPath));
     const models = parentRuntime(context);
     const store = await (options.openStore ?? openStore)(agentDir, context.sessionManager.getSessionFile(), sessionId!, context.cwd);
     capabilities = new ParentCapabilities(pi, () => ctx!, new NativeMcpBridge(pi, () => ctx!, agentDir));
@@ -274,19 +280,17 @@ Your trust policy is ${trust}. Your permission profile is ${definition.permissio
       let [action, id] = args.trim().split(/\s+/);
       action = action.replace(/^#(?=\d)/, ''); id = id?.replace(/^#(?=\d)/, '');
       if (action === 'config') {
-        let draft: string;
-        try { draft = await readFile(configPath, 'utf8'); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; draft = JSON.stringify(DEFAULT_SUBAGENT_SETTINGS, null, 2); }
-        if (!context.hasUI) { context.ui.notify(`${configPath}\n${cleanText(draft)}`, 'info'); return; }
-        try { await readSubagentSettings(configPath); } catch (error) { context.ui.notify(oneLine(String(error)), 'error'); }
-        for (;;) {
-          const value = await context.ui.editor('Subagent settings', draft);
-          if (value === undefined) return;
-          draft = value;
-          try { await writeSubagentSettings(configPath, JSON.parse(value)); }
-          catch (error) { context.ui.notify(oneLine(String(error)), 'error'); continue; }
-          configureFooter(context, (await readSubagentSettings(configPath)).indicatorPosition); return;
-        }
+        const { settings, warning } = await editableSubagentSettings(configPath);
+        if (context.mode !== 'tui' || !context.hasUI) { context.ui.notify(`${configPath}\n${Object.entries(settings).map(([key, value]) => `${key}: ${value}`).join('\n')}${warning ? '\n' + warning : ''}`, 'info'); return; }
+        const models: SettingsModel[] = [{ id: 'current', thinking: context.model ? getSupportedThinkingLevels(context.model) : [] },
+          ...context.modelRegistry.getAvailable().filter(model => !context.scopedModels.length || context.scopedModels.some(item => item.model.provider === model.provider && item.model.id === model.id))
+            .map(model => ({ id: `${model.provider}/${model.id}`, thinking: getSupportedThinkingLevels(model) }))];
+        const epoch = generation;
+        await context.ui.custom<void>((tui, theme, _keys, done) => new SubagentSettingsEditor(settings, models, theme, async value => {
+          await writeSubagentSettings(configPath, value);
+          if (epoch === generation) configureFooter(context, value);
+        }, () => done(), () => tui.requestRender(), () => tui.terminal.rows, warning));
+        return;
       }
       const owner = await use(context);
       if (action === 'stop') {

@@ -26,6 +26,7 @@ async function harness(persistent = false) {
   const baseFactory = () => ({ getText: () => editorText, handleInput: (data: string) => forwarded.push(data) });
   let editorFactory: any = baseFactory, editor = baseFactory();
   let runtime!: SubagentRuntime, persistMessages = true, sequence = 0;
+  let interact: (component: any) => void | Promise<void> = () => {};
   const context: any = { cwd, mode: 'tui', hasUI: true, model: faux.models[0], modelRegistry: new ModelRegistry(models),
     scopedModels: [], thinkingLevel: 'off', isProjectTrusted: () => true, sessionManager: manager, isIdle: () => true,
     ui: { setStatus: (key: string, value: unknown) => statuses.push({ key, value }), notify: (text: string) => notifications.push(text),
@@ -34,6 +35,7 @@ async function harness(persistent = false) {
       custom: async (factory: any, options: any) => {
         let result: any;
         const component = await factory({ terminal: { rows: 32 }, requestRender: () => {} }, { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text }, {}, (value: any) => { result = value; });
+        await interact(component);
         customViews.push(component.render(120));
         customOptions.push(options);
         component.dispose?.();
@@ -64,6 +66,7 @@ async function harness(persistent = false) {
   };
   return { dir, cwd, agentDir, context, models, faux, messages, notifications, statuses, footers, commands, renderers, tools, shortcuts, customViews, customOptions, emit, tool, forwarded,
     get editor() { return editor; }, text: (value: string) => { editorText = value; }, get runtime() { return runtime; }, pi,
+    onCustom: (handler: typeof interact) => { interact = handler; },
     persist: (value: boolean) => { persistMessages = value; },
     reload: async () => {
       await emit('session_shutdown');
@@ -314,7 +317,10 @@ test('the first-line footer can switch back to the ordinary status row', async (
   const h = await harness();
   try {
     expect(typeof h.footers.at(-1)).toBe('function');
-    h.context.ui.editor = async (_title: string, value: string) => JSON.stringify({ ...JSON.parse(value), indicatorPosition: 'status' });
+    h.onCustom(async component => {
+      component.handleInput('\r'); component.handleInput('\x1b[B'); component.handleInput('\r');
+      await expect.poll(() => h.footers.at(-1)).toBeUndefined(); component.handleInput('\x1b');
+    });
     await h.commands.get('agents').handler('config', h.context);
     expect(h.footers.at(-1)).toBeUndefined();
     await h.reload();
@@ -406,16 +412,20 @@ test('the parent tool accepts steering and forked context', async () => {
   } finally { release?.(); await h.cleanup(); }
 });
 
-test('failed startup can be repaired through config and invalid edits are retained', async () => {
+test('failed startup can be repaired through interactive settings without a JSON editor', async () => {
   const h = await harness();
   try {
     const path = join(h.agentDir, 'subagents', 'settings.json');
     await mkdir(join(h.agentDir, 'subagents'), { recursive: true }); await writeFile(path, '{"maxTurns":0}');
     await expect(h.reload()).rejects.toThrow('maxTurns');
-    const drafts: string[] = [];
-    h.context.ui.editor = async (_title: string, draft: string) => { drafts.push(draft); return drafts.length === 1 ? '{' : '{}'; };
+    h.context.ui.editor = () => { throw new Error('Raw JSON editor must not open'); };
+    h.onCustom(async component => {
+      expect(component.render(120).join('\n')).toContain('Invalid values replaced with defaults');
+      component.handleInput('\x1b[A'); component.handleInput('\r');
+      await expect.poll(async () => JSON.parse(await readFile(path, 'utf8')).maxTurns).toBe(20);
+      component.handleInput('\x1b');
+    });
     await h.commands.get('agents').handler('config', h.context);
-    expect(drafts).toEqual(['{"maxTurns":0}', '{']);
     expect(JSON.parse(await readFile(path, 'utf8')).maxTurns).toBe(20);
     expect((await h.tool({ action: 'list' })).isError).not.toBe(true);
   } finally { await h.cleanup(); }

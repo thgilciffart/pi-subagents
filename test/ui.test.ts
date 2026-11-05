@@ -1,13 +1,46 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux';
 import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
-import { editorPickerShortcut, formatSubagentStatus, footerRow, subagentFooter, SUBAGENT_SHORTCUT } from '../src/ui.ts';
+import { editorPickerShortcut, formatSubagentStatus, footerRow, subagentFooter, SUBAGENT_SHORTCUT, SubagentIndicator } from '../src/ui.ts';
 
 test('the compact indicator uses Subagents and the picker shortcut', () => {
   expect(SUBAGENT_SHORTCUT).toBe('shift+left');
-  expect(formatSubagentStatus([{ status: 'running' }, { status: 'completed' }] as any)).toBe('Subagents 1');
+  expect(formatSubagentStatus([{ status: 'running' }, { status: 'completed' }] as any)).toBe('● Subagents 1 · working 1');
   expect(formatSubagentStatus([])).toBeUndefined();
+});
+
+test('indicator animates cached activity, pauses, reports completion, and stops on disposal', () => {
+  vi.useFakeTimers();
+  const publish = vi.fn(), indicator = new SubagentIndicator(publish);
+  const run = { id: '1', run: 1, receipt: 'parent:1:1', status: 'running', activity: 'thinking' } as any;
+  try {
+    indicator.update([run]); const first = publish.mock.lastCall![0];
+    vi.advanceTimersByTime(120); expect(publish.mock.lastCall![0]).not.toBe(first);
+    expect(publish.mock.lastCall![0]).toContain('thinking 1');
+    indicator.update([{ ...run, activity: 'tool:read' }]); expect(publish.mock.lastCall![0]).toContain('tools 1');
+    indicator.setAnimated(false); const staticText = publish.mock.lastCall![0];
+    vi.advanceTimersByTime(600); expect(publish.mock.lastCall![0]).toBe(staticText);
+    indicator.setAnimated(true); indicator.update([{ ...run, recoveryError: 'Trust required' }]);
+    const calls = publish.mock.calls.length;
+    vi.advanceTimersByTime(600); expect(publish).toHaveBeenCalledTimes(calls);
+    expect(publish.mock.lastCall![0]).toContain('Ⅱ Subagents 1 · paused 1');
+    indicator.update([{ ...run, status: 'completed' }]); expect(publish.mock.lastCall![0]).toContain('✓ Subagents · 1 completed');
+    vi.advanceTimersByTime(3500); expect(publish.mock.lastCall![0]).toBeUndefined();
+    indicator.update([run]); indicator.dispose(); publish.mockClear();
+    vi.advanceTimersByTime(1000); expect(publish).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+  } finally { indicator.dispose(); vi.useRealTimers(); }
+});
+
+test.each(['failed', 'cancelled'])('indicator briefly reports %s without replaying old results on load', status => {
+  vi.useFakeTimers(); const publish = vi.fn(), indicator = new SubagentIndicator(publish);
+  const run = { receipt: 'p:1:1', status } as any;
+  try {
+    indicator.update([run]); expect(publish.mock.lastCall![0]).toBeUndefined();
+    indicator.update([{ ...run, status: 'running' }]); indicator.update([run]);
+    expect(publish.mock.lastCall![0]).toContain(status);
+    vi.advanceTimersByTime(3500); expect(publish.mock.lastCall![0]).toBeUndefined();
+  } finally { indicator.dispose(); vi.useRealTimers(); }
 });
 
 test('the picker shortcut preserves a custom editor and suppresses repeated openings', async () => {
