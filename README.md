@@ -1,16 +1,24 @@
 # Pi subagents
 
-Named subagents for Pi, with parallel execution, saved conversations, and crash recovery. The parent handles user questions. Children share one status line, return collapsed results, and expose transcripts on demand.
+Named Pi subagents with persistent conversations and crash recovery.
 
-This is a standalone package, separate from pi-qol. It targets Pi 1.4.x and Node.js 22.19 or later. It has not been published to npm.
+The parent handles user questions. Children share one status line, return collapsed results, and expose transcripts on demand. This package targets Pi 1.4.x and Node.js 22.19 or later.
 
 ## Install
 
-```bash
+Requires Pi 1.4.x and Node.js 22.19 or later.
+
+```sh
+pi install npm:@thgilciffart/pi-subagents
+```
+
+To install from Git instead, run:
+
+```sh
 pi install git:github.com/thgilciffart/pi-subagents
 ```
 
-Reload Pi, then ask the parent to delegate a task. `/agents` opens the task browser. Shift+Left also opens it from the text box. `/agents <id>` opens the child chat.
+Run `/reload` in an open Pi session, then ask the parent to delegate a task. `/agents` opens the task browser. Shift+Left also opens it from the text box. `/agents <id>` opens the child chat.
 
 ## Built-in agents
 
