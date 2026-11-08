@@ -12,7 +12,8 @@ test('the package loads through SDK and CLI without local host peers and discove
   const dir = await mkdtemp(join(tmpdir(), 'pi-subagents-package-'));
   try {
     const { stdout } = await exec('npm', ['pack', '--json', '--pack-destination', dir]);
-    const packed = JSON.parse(stdout)[0];
+    const parsed = JSON.parse(stdout);
+    const packed = Array.isArray(parsed) ? parsed[0] : parsed[Object.keys(parsed)[0]];
     expect(packed.files.map((file: any) => file.path)).toContain('index.ts');
     expect(packed.files.some((file: any) => /(?:test\/|auth\.json|children\.sqlite)/.test(file.path))).toBe(false);
     await exec('tar', ['-xzf', join(dir, packed.filename), '-C', dir]);
