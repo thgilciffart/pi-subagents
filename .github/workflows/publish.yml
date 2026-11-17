@@ -20,9 +20,8 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
-      # npm ci when a package-lock.json exists, npm install otherwise (bun.lock repos)
-      - run: npm ci || npm install
+      # Node 22 bundles npm 10. Trusted publishing requires npm 11.5.1 or later.
+      - run: npm install --global npm@11
+      - run: npm ci
       # prepublishOnly (check + test) runs automatically before publish
       - run: npm publish --access public
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }} # only needed without trusted publishing
