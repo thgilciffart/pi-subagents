@@ -315,3 +315,13 @@ npm pack
 ```
 
 Tests use local model fixtures, a local MCP server, a real SDK parent, and processes killed at recovery checkpoints. The Pi 1.4 dependency tree has known npm audit advisories; inspect `npm audit` before distribution.
+
+## Publish a release
+
+Push changes to `main` with Conventional Commit messages. Use `fix:` for a patch release, `feat:` for a minor release, and `!` for a breaking change. Before version 1.0, breaking changes bump the minor version.
+
+Release Please opens or updates a release PR with changes to `package.json`, `package-lock.json`, `CHANGELOG.md`, and `.release-please-manifest.json`. Merge that PR to create the version tag and GitHub release. The same `publish.yml` workflow checks out the release tag, installs dependencies, runs type checking and tests, and publishes to npm.
+
+Publishing uses npm trusted publishing for `thgilciffart/pi-subagents` and workflow filename `publish.yml`, with no GitHub environment. The connection must allow `npm publish`. No npm token or additional GitHub token is required. GitHub Actions must be allowed to create pull requests in the repository's Actions settings.
+
+To retry a failed publication, rerun the failed publish job from that workflow run. You can also run `publish.yml` manually against the release tag. Each published npm version is immutable, so publish subsequent changes through a new release PR.

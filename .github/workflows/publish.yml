@@ -1,21 +1,53 @@
 name: Publish to npm
 
-# Runs when a GitHub release is published, or manually from the Actions tab.
-# Bump the version in package.json and commit first; this workflow publishes it.
 on:
+  push:
+    branches: [main]
   release:
     types: [published]
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write # lets npm verify this workflow via trusted publishing (OIDC)
 
 jobs:
-  publish:
+  release-please:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    concurrency:
+      group: release-please-main
+      cancel-in-progress: false
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    # Releases created with GITHUB_TOKEN do not trigger another workflow run.
+    if: >-
+      ${{ !cancelled() && (needs.release-please.outputs.release_created == 'true' ||
+          github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name || github.event.release.tag_name || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -23,5 +55,5 @@ jobs:
       # Node 22 bundles npm 10. Trusted publishing requires npm 11.5.1 or later.
       - run: npm install --global npm@11
       - run: npm ci
-      # prepublishOnly (check + test) runs automatically before publish
+      # prepublishOnly runs type checking and tests before publication.
       - run: npm publish --access public
