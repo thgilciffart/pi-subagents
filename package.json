@@ -1,6 +1,6 @@
 {
   "name": "@thgilciffart/pi-subagents",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Named Pi subagents with persistent conversations and crash recovery",
   "type": "module",
   "license": "MIT",
