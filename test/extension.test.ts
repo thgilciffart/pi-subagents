@@ -343,7 +343,8 @@ test('task completion leaves the detailed browser hidden until Shift+Left opens 
 });
 
 test('a saved child chat opens across the full terminal after reload', async () => {
-  const h = await harness(true);
+  const capabilities = getCapabilities(), h = await harness(true);
+  setCapabilities({ ...capabilities, images: null });
   try {
     h.faux.setResponses([answer('Saved child evidence')]);
     const spawned = await h.tool({ action: 'spawn', agent: 'Explore', task: 'Inspect saved chat' });
@@ -358,7 +359,7 @@ test('a saved child chat opens across the full terminal after reload', async () 
     expect(h.customViews.at(-1).join('\n')).toContain('Saved child evidence');
     expect(h.customViews.at(-1).at(-1)).toContain('Esc back');
     expect(h.editor.getText()).toBe('Keep the parent draft');
-  } finally { await h.cleanup(); }
+  } finally { setCapabilities(capabilities); await h.cleanup(); }
 });
 
 test('image-capable terminals use an inline child chat instead of covering transcript images', async () => {
@@ -415,8 +416,8 @@ test('the parent tool accepts steering and forked context', async () => {
 test('failed startup can be repaired through interactive settings without a JSON editor', async () => {
   const h = await harness();
   try {
-    const path = join(h.agentDir, 'subagents', 'settings.json');
-    await mkdir(join(h.agentDir, 'subagents'), { recursive: true }); await writeFile(path, '{"maxTurns":0}');
+    const path = join(h.agentDir, 'subagent.json');
+    await writeFile(path, '{"maxTurns":0}');
     await expect(h.reload()).rejects.toThrow('maxTurns');
     h.context.ui.editor = () => { throw new Error('Raw JSON editor must not open'); };
     h.onCustom(async component => {
@@ -434,8 +435,7 @@ test('failed startup can be repaired through interactive settings without a JSON
 test('fixing a settings file externally lets the next call retry startup', async () => {
   const h = await harness();
   try {
-    await mkdir(join(h.agentDir, 'subagents'), { recursive: true });
-    const path = join(h.agentDir, 'subagents', 'settings.json'); await writeFile(path, '{');
+    const path = join(h.agentDir, 'subagent.json'); await writeFile(path, '{');
     await expect(h.reload()).rejects.toThrow(); await writeFile(path, '{}');
     expect((await h.tool({ action: 'list' })).isError).not.toBe(true);
   } finally { await h.cleanup(); }
@@ -547,5 +547,23 @@ test('parent result metadata clips child output but the saved child keeps the fu
     const id = spawned.details.runs[0].id; await h.runtime.wait(id, 3000); await flush();
     expect(h.messages[0].message.details.runs[0].output.length).toBeLessThan(2200);
     expect((await h.runtime.get(id)).output).toBe(output);
+  } finally { await h.cleanup(); }
+});
+
+test('session startup migrates legacy settings and preserves an existing root configuration', async () => {
+  const h = await harness();
+  try {
+    const legacy = join(h.agentDir, 'subagents', 'settings.json');
+    const path = join(h.agentDir, 'subagent.json');
+    await mkdir(join(h.agentDir, 'subagents'), { recursive: true });
+    await writeFile(legacy, '{"maxTurns":37}');
+    await h.reload();
+    expect(JSON.parse(await readFile(path, 'utf8')).maxTurns).toBe(37);
+    await expect(readFile(legacy)).rejects.toMatchObject({ code: 'ENOENT' });
+    await mkdir(join(h.agentDir, 'subagents'), { recursive: true });
+    await writeFile(legacy, '{"maxTurns":12}');
+    await h.reload();
+    expect(JSON.parse(await readFile(path, 'utf8')).maxTurns).toBe(37);
+    expect(JSON.parse(await readFile(legacy, 'utf8')).maxTurns).toBe(12);
   } finally { await h.cleanup(); }
 });

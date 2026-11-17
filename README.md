@@ -205,7 +205,7 @@ Temporary model-scope, model-availability, project-trust, and capability checks 
 
 If startup fails because settings are invalid or another process holds the lock, later calls retry initialization. `/agents config` works without an initialized runtime. Its controls preserve valid settings and show defaults for invalid values. Choose Save settings to repair the file. Failed saves retain your edits for another attempt.
 
-Saved-parent runtime data lives at `<Pi agent directory>/subagents/sessions/<parent hash>/`, outside the repository. SQLite stores task checkpoints and conversations. A separate SQLite lock prevents two processes from owning the same parent. Ephemeral parents keep child runtime data in memory and lose it on extension reload or process exit.
+Saved-parent runtime data lives at `<parent session directory>/<session ID>.subagents/`, outside the repository. SQLite stores task checkpoints and conversations. A separate SQLite lock prevents two processes from owning the same parent. Existing runtime data moves from the legacy `subagents/sessions/<parent hash>/` directory when its parent session opens. The extension removes empty legacy directories. Ephemeral parents keep child runtime data in memory and lose it on extension reload or process exit.
 
 Starting Pi from your home directory uses `~/.pi/agent` normally. The storage check rejects runtime data inside a Git checkout, including when Pi starts in a subdirectory of that checkout.
 
@@ -279,7 +279,9 @@ This placement uses Pi's custom-footer slot. If another extension supplies your 
 
 Run `/agents config` or choose Edit settings in the task browser. The panel has searchable model and effort pickers, validated number fields, context and workspace choices, and the indicator position. Changes save automatically. Escape returns from a field or closes the panel after pending saves finish. Ctrl+U replaces the current number. Display changes apply immediately; existing children retain their saved execution settings. New children use these defaults unless the launch or definition overrides them.
 
-Global defaults are stored at `<Pi agent directory>/subagents/settings.json`:
+Global defaults are stored at `<Pi agent directory>/subagent.json`. On session open, the extension moves legacy `subagents/settings.json` here if the new file does not exist.
+
+The settings file accepts:
 
 ```json
 {

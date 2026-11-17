@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile, copyFile, unlink, rmdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { dirname } from 'node:path';
 import { THINKING_LEVELS, type Thinking, type Isolation, type ContextMode } from './agents.ts';
 
@@ -67,4 +68,15 @@ export async function writeSubagentSettings(path: string, value: unknown): Promi
     await writeFile(temporary, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
+}
+
+/** Move legacy settings without replacing an existing configuration. */
+export async function migrateSubagentSettings(legacy: string, path: string): Promise<void> {
+  try { await copyFile(legacy, path, constants.COPYFILE_EXCL); }
+  catch (error) {
+    if (['ENOENT', 'EEXIST'].includes((error as NodeJS.ErrnoException).code!)) return;
+    throw error;
+  }
+  await unlink(legacy);
+  await rmdir(dirname(legacy)).catch(error => { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error; });
 }

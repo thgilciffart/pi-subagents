@@ -7,7 +7,7 @@ import { convertToLlm, getAgentDir, loadProjectContextFiles, type ExtensionAPI, 
 import { getCapabilities, Text } from '@earendil-works/pi-tui';
 import { Type, type Static } from 'typebox';
 import { discoverAgents, THINKING_LEVELS, type Thinking } from './agents.ts';
-import { editableSubagentSettings, readSubagentSettings, writeSubagentSettings, type SubagentSettings } from './config.ts';
+import { migrateSubagentSettings, editableSubagentSettings, readSubagentSettings, writeSubagentSettings, type SubagentSettings } from './config.ts';
 import { parentRuntime, SubagentRuntime, isRunning, type RunSnapshot, type SavedChild } from './runtime.ts';
 import { openStore } from './storage.ts';
 import { parentReceipts, RESULT_MESSAGE } from './receipts.ts';
@@ -50,7 +50,7 @@ export default function subagents(pi: ExtensionAPI, options: {
   onRuntime?: (runtime: SubagentRuntime) => void;
 } = {}): void {
   const agentDir = options.agentDir ?? getAgentDir();
-  const configPath = options.configPath ?? join(agentDir, 'subagents', 'settings.json');
+  const configPath = options.configPath ?? join(agentDir, 'subagent.json');
   let ctx: ExtensionContext | undefined;
   let runtime: SubagentRuntime | undefined;
   let capabilities: ParentCapabilities | undefined;
@@ -112,6 +112,7 @@ export default function subagents(pi: ExtensionAPI, options: {
     ctx = context; sessionId = context?.sessionManager.getSessionId();
     if (!context) return;
     pickerShortcut.install(context);
+    if (!options.configPath) await migrateSubagentSettings(join(agentDir, 'subagents', 'settings.json'), configPath);
     configureFooter(context, await readSubagentSettings(configPath));
     const models = parentRuntime(context);
     const store = await (options.openStore ?? openStore)(agentDir, context.sessionManager.getSessionFile(), sessionId!, context.cwd);

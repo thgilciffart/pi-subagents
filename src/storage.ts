@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, realpath, stat } from 'node:fs/promises';
+import { mkdir, realpath, stat, rename, rmdir } from 'node:fs/promises';
 import { join, relative, isAbsolute, dirname, resolve, basename } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { MemoryStorage, type Storage } from '@earendil-works/pi-durable';
@@ -23,7 +23,8 @@ export async function canonicalPath(path: string): Promise<string> {
 /** The operating system releases this exclusive SQLite lock even after SIGKILL. */
 export async function openStore(agentDir: string, parentFile: string | undefined, parentId: string, cwd: string): Promise<Store> {
   if (!parentFile) return { storage: new MemoryStorage(), release: () => {} };
-  const root = join(agentDir, 'subagents', 'sessions');
+  const parentPath = await canonicalPath(parentFile);
+  const root = dirname(parentPath);
   const actualRoot = await canonicalPath(root);
   let boundary: string | undefined;
   for (let directory = actualRoot; ; directory = dirname(directory)) {
@@ -34,13 +35,30 @@ export async function openStore(agentDir: string, parentFile: string | undefined
   if (boundary) {
     const within = relative(boundary, actualRoot);
     if (within === '' || (within !== '..' && !within.startsWith('../') && !isAbsolute(within))) {
-      throw new Error('Pi agent directory must be outside the Git repository. Runtime chats cannot be stored in the repository.');
+      throw new Error('Parent session directory must be outside the Git repository. Runtime chats cannot be stored in the repository.');
     }
   }
   await mkdir(actualRoot, { recursive: true, mode: 0o700 });
-  const parentPath = await canonicalPath(parentFile);
+  const dir = join(actualRoot, `${encodeURIComponent(parentId)}.subagents`);
   const key = createHash('sha256').update(`${parentId}\0${parentPath}`).digest('hex');
-  const dir = join(actualRoot, key);
+  const legacyRoot = join(agentDir, 'subagents', 'sessions');
+  const legacyDir = join(legacyRoot, key);
+  let legacyLock: DatabaseSync | undefined;
+  try {
+    try { await stat(dir); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (await stat(legacyDir).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; })) {
+        legacyLock = new DatabaseSync(join(legacyDir, 'owner.sqlite'));
+        try { legacyLock.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE'); }
+        catch (error) { throw new Error('Another Pi process owns this parent session. Close it before recovering its subagents.', { cause: error }); }
+        await rename(legacyDir, dir);
+        for (const empty of [legacyRoot, dirname(legacyRoot)]) {
+          await rmdir(empty).catch(error => { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error; });
+        }
+      }
+    }
+  } finally { legacyLock?.close(); }
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const lock = new DatabaseSync(join(dir, 'owner.sqlite'));
   try {
