@@ -7,5 +7,24 @@
       "include-component-in-tag": false,
       "bump-minor-pre-major": true
     }
-  }
+  },
+  "pull-request-header": "This PR updates the package version and release notes.",
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Fixes"
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "revert",
+      "section": "Reverts"
+    }
+  ]
 }
